@@ -7,16 +7,16 @@ Must:
 
 Should Have:
 
+    Structure Remapping : Gérer intelligemment le cas où une classe change de taille ou de layout (ajout d'un membre au milieu d'une struct) sans corrompre la mémoire.
     Persistance de l'état (Memory Persistence) : Transférer les valeurs des variables de l'ancienne version vers la nouvelle pour ne pas perdre le contexte de debug.
     Détection automatique (File Watcher) : Déclencher le cycle "Build -> Sandbox -> Swap" dès qu'une sauvegarde est détectée dans l'IDE.
     Time-out de Sandbox : Si le nouveau code contient une boucle infinie, la sandbox doit pouvoir le tuer pour ne pas bloquer l'outil.
 
 Could Have:
-    Structure Remapping : Gérer intelligemment le cas où une classe change de taille ou de layout (ajout d'un membre au milieu d'une struct) sans corrompre la mémoire.
     Multi-sandbox : Pouvoir tester plusieurs versions ou plusieurs sets de tests en parallèle.
     Intégration IDE : Plugin pour VS Code ou Visual Studio pour souligner les erreurs directement dans le code source.
+    Compatibilité multi-OS : On peut se concentrer uniquement sur Windows ou Linux pour commencer.
 
 Wont Have:
-    Compatibilité multi-OS : On peut se concentrer uniquement sur Windows ou Linux pour commencer.
     Gestion du déploiement final.
 
