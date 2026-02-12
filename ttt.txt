@@ -1,0 +1,19 @@
+Sarah Lagor (Lead Developer c++)
+39ans
+
+Garante de l'architecture
+    moteur calcul physique
+
+rigoureuse/efficace:
+        integration d'algorithme de haute precision
+
+sur des projets massifs
+
+a cause de l'envergure du projet (grosse quantite de ligne de code) ---> perte de 1h30 quotidienne sur les recompilation
+
+rallongement des deadline
+
+le temps perdu a cause recompilation lui provoque un effet de frustration:
+
+elle a plus l'impression de passer ses journees a compiler que coder.
+ce qui provoque le sentiment de ne pas avoir ete productive sur la journee ---> baisse de motivation
