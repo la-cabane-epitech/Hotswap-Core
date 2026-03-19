@@ -1,0 +1,10 @@
+compiller le file watcher dans le dossier FileWatcher
+g++ -std=c++17 -Wall -Wextra -pedantic main.cpp -o FileWatcher && mv ./FileWatcher ../test1
+
+compiler le test dans test1
+g++ -o main main.cpp DLLoader.cpp -ldl
+
+il faut une lib .so de base, il faudra change ca. Compile la lib dans test1
+g++ -shared -fPIC -o libplugin.so plugin.cpp
+
+lance ./FileWatcher ./main
