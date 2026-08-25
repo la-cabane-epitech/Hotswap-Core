@@ -1,0 +1,33 @@
+en usage réel, ce dossier n'est PAS compilé en binaire séparé : FileWatcher/Core.hpp
+linke directement SandboxRunner.cpp/StatusWriter.cpp et appelle validate_candidate()
+en interne (voir le README a la racine du repo, section Build). Ce main.cpp/README
+ne servent qu'a tester la validation d'un candidat en isolation, sans lancer tout
+le pipeline FileWatcher.
+
+compiler le sandbox runner (CLI standalone, pour tester)
+g++ -std=c++17 -Wall -Wextra -pedantic -o sandbox_runner main.cpp SandboxRunner.cpp StatusWriter.cpp -ldl
+
+usage
+./sandbox_runner <module_name> <candidate_path> <active_path> [timeout_ms=2000]
+
+exemple (copier ce binaire dans test1/ pour tester contre un vrai plugin.cpp)
+cp sandbox_runner ../test1/ && cd ../test1
+g++ -shared -fPIC -o libplugin.so.candidate plugin.cpp
+./sandbox_runner plugin ./libplugin.so.candidate ./libplugin.so
+
+attention: dlopen() traite un nom sans "/" comme un nom a chercher dans le
+path systeme du linker dynamique, pas comme un chemin relatif au dossier
+courant. toujours prefixer les chemins par "./" (ou passer un chemin absolu).
+
+code retour: 0 si le candidat a été validé et promu en libplugin.so, 1 sinon.
+en cas d'échec ou de timeout, active_path n'est jamais touché : le host garde
+la dernière version connue comme bonne.
+
+fichiers produits a cote du candidat:
+- <module_name>.status.json : dernier statut connu (voir la section
+  "Protocole de statut" du README a la racine du repo)
+- <module_name>.log : stdout/stderr du candidat, utile quand il segfault
+  ou boucle avant le timeout
+
+limite connue: le contrat State/plugin_update est dupliqué depuis test1/plugin.hpp
+le temps que le "contrat ABI" (chantier Runtime) soit formalisé.

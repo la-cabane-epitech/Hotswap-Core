@@ -8,6 +8,7 @@
 #pragma once
 
 #include "FileWatcher.hpp"
+#include "SandboxRunner.hpp"
 #include <string>
 #include <iostream>
 #include <filesystem>
@@ -25,8 +26,18 @@ public:
 
         if (status == FileStatus::created || status == FileStatus::modified) {
             std::cout << "[Core] " << (status == FileStatus::created ? "Fichier créé: " : "Fichier modifié: ") << path << ". Recompilation..." << std::endl;
-            std::string cmd = "g++ -shared -fPIC -o libplugin.so.tmp " + path + " && mv libplugin.so.tmp libplugin.so";
-            system(cmd.c_str());
+
+            std::string build_cmd = "g++ -std=c++17 -shared -fPIC -o libplugin.so.candidate.tmp " + path
+                                   + " && mv libplugin.so.candidate.tmp libplugin.so.candidate";
+            if (system(build_cmd.c_str()) != 0) {
+                std::cout << "[Core] Échec de compilation, candidat rejeté." << std::endl;
+                return;
+            }
+
+            bool ok = validate_candidate("plugin", "./libplugin.so.candidate", "./libplugin.so", 2000);
+            if (!ok) {
+                std::cout << "[Core] Candidat rejeté par la sandbox, version active inchangée." << std::endl;
+            }
         } else if (status == FileStatus::erased) {
             std::cout << "[Core] Fichier supprimé: " << path << std::endl;
         }

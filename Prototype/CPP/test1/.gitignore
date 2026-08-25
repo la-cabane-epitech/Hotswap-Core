@@ -1,3 +1,5 @@
 FileWatcher
 *.so
 main
+*.log
+*.json

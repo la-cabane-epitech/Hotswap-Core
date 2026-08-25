@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "module": "plugin",
+  "state": "sandbox_passed",
+  "producer": "sandbox",
+  "timestamp": "2026-08-25T13:45:20Z",
+  "candidate_path": "./libplugin.so.candidate",
+  "active_path": "./libplugin.so",
+  "detail": {"duration_ms":1007},
+  "log_path": "plugin.log"
+}

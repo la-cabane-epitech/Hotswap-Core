@@ -10,6 +10,8 @@ Le dépôt contient actuellement un prototype (`Prototype/CPP/`) avec deux briqu
   `.cpp` est créé/modifié.
 - `test1/` : programme hôte (`main.cpp`) qui charge dynamiquement un plugin (`libplugin.so`)
   via `DLLoader`, et le recharge quand la lib change sur le disque.
+- `Sandbox/` : valide un `.so` candidat dans un process isolé (fork + timeout) avant de
+  le promouvoir en `libplugin.so` — voir `Prototype/CPP/Sandbox/README`.
 
 ## Prérequis
 
@@ -53,9 +55,12 @@ Il n'y a pas encore de `Makefile`/`CMakeLists.txt` : la compilation se fait à l
 ```bash
 cd Prototype/CPP
 
-# 1. Compiler le FileWatcher, puis le déplacer à côté du programme hôte
+# 1. Compiler le FileWatcher (il embarque directement la validation sandbox,
+#    d'où -I../Sandbox et -ldl), puis le déplacer à côté du programme hôte
 cd FileWatcher
-g++ -std=c++17 -Wall -Wextra -pedantic main.cpp -o FileWatcher && mv ./FileWatcher ../test1
+g++ -std=c++17 -Wall -Wextra -pedantic -I../Sandbox \
+    main.cpp ../Sandbox/SandboxRunner.cpp ../Sandbox/StatusWriter.cpp \
+    -o FileWatcher -ldl && mv ./FileWatcher ../test1
 cd ../test1
 
 # 2. Compiler le programme hôte
@@ -64,12 +69,19 @@ g++ -std=c++17 -o main main.cpp DLLoader.cpp -ldl
 # 3. Compiler la lib plugin de base (sera rechargée à chaud à chaque modification)
 g++ -std=c++17 -shared -fPIC -o libplugin.so plugin.cpp
 
-# 4. Lancer : le FileWatcher surveille le dossier et pilote le programme hôte
+# 4. Lancer : le FileWatcher surveille le dossier, build/valide/promeut, et
+#    pilote le programme hôte
 ./FileWatcher ./main
 ```
 
-Une fois lancé, modifier `plugin.cpp` déclenche automatiquement sa recompilation en
-`libplugin.so`, rechargée par `main` sans interruption du processus.
+`Sandbox/` reste aussi compilable en CLI standalone (`Sandbox/README`) pour tester
+la validation d'un candidat sans passer par tout le pipeline FileWatcher.
+
+Une fois lancé, modifier `plugin.cpp` déclenche : recompilation en `libplugin.so.candidate`,
+validation par `sandbox_runner` dans un process isolé (avec timeout), puis — seulement si
+elle passe — promotion en `libplugin.so`, rechargée par `main` sans interruption du
+processus. Un candidat qui plante, boucle ou dépasse le timeout est rejeté sans jamais
+toucher à `libplugin.so` : le host continue de tourner sur la dernière version valide.
 
 ## Protocole de statut (inter-composants)
 
