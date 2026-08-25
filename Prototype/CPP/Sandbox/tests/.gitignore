@@ -1,0 +1,5 @@
+run_tests
+*.so
+*.so.cpp
+*.log
+*.json

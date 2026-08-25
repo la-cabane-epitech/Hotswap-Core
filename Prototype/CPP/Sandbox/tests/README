@@ -1,0 +1,22 @@
+compiler et lancer la suite de tests
+g++ -std=c++17 -Wall -Wextra -I.. \
+    test_main.cpp test_status_writer.cpp test_sandbox_runner.cpp \
+    ../SandboxRunner.cpp ../StatusWriter.cpp \
+    -o run_tests -ldl
+./run_tests
+
+ce que ca couvre
+- StatusWriter : écriture atomique (pas de .tmp qui traine), tous les champs
+  du schéma présents, overwrite qui ne laisse que le dernier état
+- SandboxRunner (validate_candidate) : bon plugin -> promu ; segfault,
+  exception non catchée, symbole manquant, chemin inexistant -> rejeté et
+  active_path jamais touché ; boucle infinie -> tué proche du timeout (pas
+  de hang de la suite)
+
+ces tests compilent de vrais .so a la volee (voir build_plugin() dans
+test_sandbox_runner.cpp) donc la suite prend quelques secondes, la majeure
+partie du temps est passee dans g++, pas dans les tests eux memes.
+
+harnais de test maison (test_runner.hpp), zero dependance externe, coherent
+avec le reste du prototype. a remplacer par un framework (doctest/Catch2)
+si l'équipe préfère, mais ca demande d'ajouter une dépendance vendored au repo.
