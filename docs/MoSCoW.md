@@ -3,20 +3,24 @@
 ## Décision d'architecture préalable
 
 Toutes les priorités ci-dessous découlent d'un choix qui doit être assumé
-explicitement : **Hotswap-Core cible les projets qui adoptent son architecture
-plugin.**
+explicitement : **le code rechargé vit dans une bibliothèque partagée derrière une
+frontière `extern "C"`, et l'état persistant est possédé par le programme hôte, pas
+par le plugin.** C'est ce que fait le prototype (`src/host/`, `src/plugin/`).
 
-Le code rechargé vit dans une bibliothèque partagée derrière une frontière
-`extern "C"`, et l'état persistant est possédé par le programme hôte, pas par le
-plugin. C'est ce que fait le prototype (`src/host/`, `src/plugin/`).
+L'outil ne demande pas de restructurer une application entière : il demande **une
+couture**, à un endroit où l'on itère souvent et où le code est déjà séparable de
+la donnée — une boucle d'update, un handler, un système de règles. Le critère de
+coût du portage n'est pas la taille de la codebase, mais la quantité d'état qu'il
+faut déloger du code rechargé pour la remonter dans l'hôte. Voir la section
+*Périmètre* du `README.md`.
 
-C'est une contrainte pour l'utilisateur : l'outil n'est pas applicable tel quel à
-une codebase existante sans restructuration. En contrepartie, elle rend le projet
-réalisable et démontrable.
+La cible est donc : **projets ayant déjà une frontière de rechargement, ou pouvant
+en isoler une rapidement, et dont l'état de session est cher à reconstruire** — jeu
+vidéo, simulation, robotique, trading. Ces domaines ont déjà adopté ce pattern
+volontairement et sans outil ; le coût d'adoption y est proche de zéro.
 
-L'approche inverse — recharger du C++ arbitraire dans un process existant sans
-toucher à son architecture (Live++, Unreal Live Coding) — est hors périmètre. Voir
-*Won't Have*.
+L'approche inverse — recharger du C++ arbitraire dans un process sans toucher à son
+architecture (Live++, Unreal Live Coding) — est hors périmètre. Voir *Won't Have*.
 
 **Le différenciateur du projet n'est pas le hot reload lui-même** — il est connu et
 déjà implémenté dans le prototype — **mais le filet de sécurité autour** : un
@@ -52,6 +56,10 @@ Aujourd'hui `src/filewatcher/Core.hpp` appelle un `g++ -shared -fPIC` littéral 
 c'est acceptable pour un prototype, pas pour un produit installable.
 *Nouvel item — sans lui, l'outil n'est utilisable que sur son propre dépôt.*
 
+Inclut la forme du livrable : un `hotswap run ./mon_app` qui lit la configuration
+et supervise les processus. Tant que le livrable est un jeu de binaires posés à la
+racine, il n'y a pas d'usage quotidien possible.
+
 **4. Canari de validation.** Avant tout swap, le candidat est chargé et exécuté
 dans un processus enfant issu d'un `fork()` **du Runtime**, sous timeout. L'enfant
 `dlopen` le candidat, appelle le point d'entrée N fois sur la copie *copy-on-write*
@@ -67,7 +75,7 @@ Cette étape attrape les trois classes de fautes qu'un compilateur ne peut pas v
 et qui tuent l'hôte : le **segfault**, la **boucle infinie** (couverte par le
 timeout — l'ancien item *Time-out de Sandbox* est fusionné ici, un canari sans
 timeout ne sert à rien), et les **symboles manquants ou incompatibles** à la
-résolution.
+résolution. Elle couvre aussi une désérialisation d'état fautive (item 7).
 
 *Remplace l'ancienne « Sandbox de Validation » qui exécutait les tests
 unitaires/fonctionnels du projet. Motif : faire tourner une suite de tests à chaque
@@ -76,6 +84,13 @@ et suppose des tests à jour sur le code qu'on est en train de casser. C'est une
 exigence de CI transposée par erreur dans une boucle de développement. Le canari
 coûte quelques millisecondes et ne demande aucun test à écrire.* La version avec
 suite de tests devient un Could Have.
+
+**Limite à documenter côté utilisateur : le canari ne contient rien.** L'enfant a
+les mêmes droits que le parent, donc les effets de bord du candidat sont réels et
+dupliqués — un fichier écrit, une requête réseau, une base touchée le sont deux
+fois. Le code placé derrière la frontière doit être pauvre en effets de bord. Et le
+canari prouve seulement que le candidat n'a pas planté sur cet état-là : il protège
+la session, il ne valide pas la correction du code.
 
 **5. Gestionnaire de transition.** Si le canari passe, on swappe ; sinon on reste
 sur l'ancienne version et on émet un `rolled_back`. Le runtime ne swappe jamais un
@@ -94,94 +109,175 @@ statut, pas une étape de validation.*
 
 ## Should Have
 
-**7. Persistance et migration de l'état à la frontière du plugin.** Transférer les
-valeurs de l'ancienne version vers la nouvelle pour ne pas perdre le contexte de
-debug, y compris quand la struct d'état change de layout.
+### 7. Sérialisation de l'état et remapping par nom de champ
 
-L'état est **versionné**, et le plugin fournit un hook de migration :
+Transférer les valeurs de l'ancienne version vers la nouvelle pour ne pas perdre le
+contexte de debug, **y compris quand la struct d'état change de layout**.
 
-```c
-extern "C" size_t plugin_state_size(void);
-extern "C" int    plugin_state_version(void);
-extern "C" void   plugin_migrate(const void* old_state, int old_version, void* new_state);
+Le mécanisme est un **snapshot auto-descriptif** : l'état est sérialisé dans un
+format qui transporte l'identité de chaque champ, pas seulement ses octets. Le
+remapping tombe alors sans jamais avoir à connaître l'ancien layout :
+
+| Changement dans la struct | Comportement à la relecture |
+|---|---|
+| Champ ajouté | Absent du snapshot → valeur par défaut |
+| Champ supprimé | Présent dans le snapshot → ignoré |
+| Champs réordonnés | Aucun effet : lecture par nom, pas par offset |
+| `int` → `float` | Conversion appliquée |
+
+*C'est ce point qui rend inutile l'analyse des informations de debug : le problème
+du remapping n'est pas résolu, il est contourné. Cet item remplace les anciens
+« Structure Remapping » et « Persistance de l'état », qui sont le même problème.*
+
+**Deux chemins, et c'est essentiel.** Sérialiser à chaque sauvegarde coûterait un
+temps proportionnel à la taille de l'état, payé dans la boucle que l'outil existe
+pour raccourcir. Or la struct ne change pas à la grande majorité des sauvegardes :
+
+```
+version d'état inchangée  →  l'état n'est pas touché, on swap le code seul   (cas courant, ~0 ms)
+version d'état changée    →  snapshot → reload → relecture par nom            (rare, on paie)
 ```
 
-Au rechargement, si la version a changé, l'hôte alloue un buffer à la nouvelle
-taille, appelle `plugin_migrate`, puis libère l'ancien.
+`plugin_state_version()` est l'aiguillage entre les deux.
 
-**Conséquence architecturale à ne pas manquer : l'hôte doit cesser de connaître le
-type de l'état.** Aujourd'hui `src/host/main.cpp` déclare `State app_state = {0}`
-sur la pile — le layout est gravé dans le binaire de l'hôte à la compilation, donc
-modifier `State` impose de recompiler l'hôte, donc de le redémarrer, donc de perdre
-l'état qu'on voulait préserver. L'hôte doit posséder un buffer opaque qu'il ne
-déréférence jamais, et `State*` disparaît de la signature du point d'entrée au
-profit d'un `void*`.
+**ABI du plugin :**
 
-*Fusionne les anciens items « Structure Remapping » et « Persistance de l'état »,
-qui sont le même problème. La partie automatique du remapping passe en Won't Have.*
+```c
+extern "C" int    plugin_state_version(void);
+extern "C" size_t plugin_state_size(void);
+extern "C" size_t plugin_state_save(const void* state, char* out, size_t cap);
+extern "C" bool   plugin_state_load(void* state, const char* in, size_t len);
+```
 
-Limites assumées : ne couvre que l'état à la frontière du plugin — les variables
+Contrainte de séquencement à ne pas rater : le snapshot est produit par **l'ancien**
+plugin, avant le `dlclose` — lui seul connaît l'ancien layout — et relu par le
+**nouveau**, après le `dlopen`.
+
+**Conséquence architecturale.** L'hôte doit cesser de connaître le type de l'état.
+Aujourd'hui `src/host/main.cpp` déclare `State app_state = {0}` sur la pile : le
+layout est gravé dans le binaire de l'hôte à la compilation, donc modifier `State`
+impose de recompiler l'hôte, donc de le redémarrer, donc de perdre l'état qu'on
+voulait préserver. L'hôte possède un buffer opaque qu'il ne déréférence jamais.
+
+**Source des noms de champs.** C++ n'a pas de réflexion exploitable. Trois options,
+par ordre de sûreté : une **macro de déclaration** (`REFLECT(State, counter, speed)`)
+qui génère la liste des champs — zéro dépendance, marche partout, c'est le choix
+retenu pour livrer ; un **générateur libclang** qui parse les headers, sans
+boilerplate côté utilisateur mais avec une étape de build et une dépendance LLVM ;
+la **réflexion statique C++26**, à vérifier sur la chaîne de compilation avant d'y
+compter et sur laquelle aucun lot ne doit reposer.
+
+**Format.** Noms de champs en clair d'abord : une migration fautive doit pouvoir
+être diagnostiquée en ouvrant le snapshot. Le passage à des tags numériques
+stables (un `uint16` par champ, à la Protobuf) est une substitution locale, à faire
+une fois le format stabilisé et **seulement si la mesure le justifie**. Un format
+positionnel — l'encodage par défaut de bibliothèques comme bitsery — est exclu :
+sans identité de champ, l'insertion d'un champ au milieu de la struct produit des
+valeurs fausses sans erreur ni crash, le pire mode de défaillance pour un outil de
+debug.
+
+**Limites assumées.** Ne couvre que l'état à la frontière du plugin ; les variables
 globales et la mémoire allouée à l'intérieur du plugin sont perdues au
-rechargement — et demande au développeur d'écrire la migration à chaque changement
-de struct. En échange, c'est déterministe, débuggable, et ça traite les migrations
-**sémantiques** (un champ qui change d'unité, un champ scindé en deux) qu'aucune
-analyse de layout ne peut deviner.
+rechargement. Et tout n'est pas sérialisable : pointeurs bruts, descripteurs de
+fichiers, sockets, contextes GPU, `std::function`, objets à vtable. Les pointeurs
+internes à l'état doivent devenir des identifiants ou des index. Un hook de
+migration écrit à la main reste l'échappatoire pour les changements **sémantiques**
+— un champ qui change d'unité, un champ scindé en deux — qu'aucune correspondance
+par nom ne peut deviner.
 
-**8. Support multi-modules.** Plusieurs plugins surveillés et rechargés
-indépendamment, chacun avec son propre fichier de statut. Le protocole du
-`README.md` l'anticipe déjà via le champ `module`, mais rien ne l'implémente.
+### 8. Snapshots nommés et restauration
+
+Sauvegarder l'état sous un nom et y revenir à la demande : *« recharge le code et
+remets-moi dans l'état d'il y a 30 secondes »*. Presque gratuit une fois l'item 7
+livré, et c'est une capacité de debug que ne donne aucun outil de hot reload
+existant.
+
+### 9. Survie au crash de l'hôte
+
+Snapshots périodiques en tâche de fond, et restauration au redémarrage. Étend la
+promesse au-delà de la frontière du plugin : aujourd'hui, si l'hôte plante pour une
+raison sans rapport avec le code rechargé, la session est perdue malgré tout le
+pipeline de validation.
+
+### 10. Support multi-modules
+
+Plusieurs plugins surveillés et rechargés indépendamment, chacun avec son propre
+fichier de statut. Le protocole du `README.md` l'anticipe déjà via le champ
+`module`, mais rien ne l'implémente. *Première variable d'ajustement si le
+calendrier se tend : l'ajouter plus tard ne coûtera pas de refonte.*
 
 ---
 
 ## Could Have
 
-**9. Sandbox avec suite de tests.** Exécution des tests unitaires/fonctionnels du
+**11. Sandbox avec suite de tests.** Exécution des tests unitaires/fonctionnels du
 projet sur le candidat, en plus du canari. Activée explicitement par les projets
 qui la veulent et qui acceptent la latence supplémentaire — jamais par défaut.
 *Rétrogradé depuis Must Have, voir item 4.*
 
-**10. Intégration IDE.** Extension VS Code pour souligner les erreurs de build et
+**12. Intégration IDE.** Extension VS Code pour souligner les erreurs de build et
 les rejets de canari directement dans le code source.
 
-**11. Multi-sandbox.** Tester plusieurs versions ou plusieurs sets de tests en
-parallèle. Ne présente d'intérêt qu'une fois l'item 9 livré.
+**13. Partage de session.** Exporter un snapshot dans un fichier qu'un collègue
+recharge chez lui pour reproduire un bug. Dépend de l'item 7.
+
+**14. Multi-sandbox.** Tester plusieurs versions ou plusieurs sets de tests en
+parallèle. Ne présente d'intérêt qu'une fois l'item 11 livré.
 
 ---
 
 ## Won't Have
 
-**12. Remapping automatique inféré depuis les informations de debug.** Découvrir
+**15. Remapping automatique inféré depuis les informations de debug.** Découvrir
 seul qu'un type a changé de layout en lisant le DWARF, retrouver tous les objets
 vivants de ce type sur le tas, les réallouer et corriger tous les pointeurs qui les
 visaient — vtables, pointeurs vers l'intérieur d'un objet et conteneurs dont le
 layout dépend de `T` compris.
 
-*Motif : c'est un projet à part entière, pas une feature. La référence du domaine
-(Live++) représente environ dix ans de travail d'un ingénieur spécialisé. Le
-remplaçant tractable est l'item 7.*
+*Motif : c'est un projet à part entière — la référence du domaine, Live++,
+représente une décennie de travail d'un ingénieur spécialisé. Et l'item 7 le rend
+inutile : un snapshot qui porte les noms de ses champs n'a pas besoin qu'on lui
+explique l'ancien layout.*
 
-**13. Hot reload sur une codebase non instrumentée.** Recharger du C++ arbitraire
+**16. Hot reload sur une codebase non instrumentée.** Recharger du C++ arbitraire
 dans un process qui tourne sans imposer l'architecture plugin. Conséquence directe
 de la décision d'architecture en tête de document.
 
-**14. Compatibilité multi-OS.** Le projet cible Linux. Le chargeur repose sur
-`dlfcn.h` et le build sur un appel direct au compilateur ; Windows demanderait une
-réécriture du chargeur (`LoadLibrary`, verrouillage des PDB) et non un portage.
+**17. Compatibilité multi-OS.** Le projet cible Linux. Le chargeur repose sur
+`dlfcn.h` et le canari sur `fork()` ; Windows demanderait une réécriture du
+chargeur (`LoadLibrary`, verrouillage des PDB) et non un portage.
 
-**15. Gestion du déploiement final.** L'outil sert la boucle de développement, pas
+*À noter pour la soutenance : l'item 7 lève le principal blocage technique, puisque
+le canari pourrait tourner sur un snapshot désérialisé dans un processus
+réellement indépendant plutôt que sur un `fork()`. Le portage devient crédible en
+v2 — c'est un choix de périmètre, pas une impasse.*
+
+**18. Gestion du déploiement final.** L'outil sert la boucle de développement, pas
 la mise en production.
 
 ---
 
 ## Décisions ouvertes
 
-À trancher avant d'ajouter la moindre fonctionnalité — la forme du livrable
-conditionne les items 3, 6 et 10 :
+1. **Comment un utilisateur installe-t-il l'outil et l'intègre-t-il à son projet ?**
+   (L'item 3 fixe la forme du livrable, pas la distribution.)
+2. **Quelle est la démo de soutenance ?** Proposition : insérer un déréférencement
+   nul dans le plugin, sauvegarder, montrer l'hôte qui encaisse, signale, et
+   continue sur la version précédente sans perdre son état — puis ajouter un champ
+   au milieu de la struct pour montrer le remapping.
 
-1. **Sous quelle forme l'outil est-il livré ?** CLI, démon, bibliothèque à linker
-   dans l'hôte, extension d'IDE ? Aujourd'hui le « produit » est un jeu de binaires
-   posés à la racine du dépôt avec un chemin de plugin codé en dur.
-2. **Comment un utilisateur l'installe-t-il et l'intègre-t-il à son projet ?**
-3. **Quelle est la démo de soutenance ?** Proposition : insérer un déréférencement
-   nul dans le plugin, sauvegarder, et montrer l'hôte qui encaisse, signale, et
-   continue sur la version précédente sans perdre son état.
+## Jalons de dérisquage
+
+Deux mesures à faire **tôt**, parce qu'elles peuvent invalider des choix de
+conception pendant qu'il est encore temps d'en changer :
+
+1. **Coût réel du portage.** Porter un projet open source du domaine cible sur
+   l'architecture plugin, et chronométrer — en mesurant surtout *combien d'état il
+   a fallu déloger*. Ce chiffre est la réponse à la question de l'adoption, et la
+   meilleure slide de la soutenance. S'il sort à plusieurs jours, la frontière est
+   trop exigeante.
+2. **Comportement du débogueur.** Que deviennent les breakpoints posés dans le
+   plugin après un `dlclose` / `dlopen` ? GDB sait en principe repositionner les
+   breakpoints `fichier:ligne` au rechargement d'une bibliothèque, mais c'est à
+   vérifier, pas à supposer. Si le développeur perd ses breakpoints à chaque
+   sauvegarde, l'outil est inutilisable pour du debug — donc inutilisable.
