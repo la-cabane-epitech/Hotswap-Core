@@ -1,14 +1,23 @@
-// plugin.cpp
-#include "plugin.hpp"
-#include <iostream>
-#include <unistd.h>
+/*
+** Demo plugin.
+**
+** Edit this file while the host is running: the watcher rebuilds it into a
+** candidate, the canary validates it, and the host adopts it without
+** restarting. `state` belongs to the host, it survives every reload.
+*/
 
-void __divise(State* state) {
-    state->counter = 2;
-}
-void plugin_update(State* state) {
+#include "plugin.hpp"
+
+#include <chrono>
+#include <iostream>
+#include <thread>
+
+void plugin_update(State *state)
+{
     state->counter++;
-    __divise(state);
-    std::cout << "[Plugin v1] Le compteur est maintenant à : " << state->counter << std::endl;
-    sleep(1);
+    std::cout << "[Plugin v1] counter = " << state->counter << std::endl;
+
+    /* Demo pacing only. The canary calls this function several times under a
+    ** timeout: a plugin sleeping too long here would be rejected. */
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
 }

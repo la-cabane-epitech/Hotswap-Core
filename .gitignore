@@ -8,8 +8,13 @@ cmake-build-*/
 *.dylib
 *.dll
 a.out
-main
-FileWatcher
+# Anchored to the root: without the leading "/", the "FileWatcher" pattern also
+# ignores the src/filewatcher/ directory (git has core.ignorecase=true on macOS).
+/main
+/FileWatcher
+
+# Pipeline runtime artifacts: active library, candidate and logs.
+/.hotswap/
 
 # Conan
 conan_toolchain.cmake

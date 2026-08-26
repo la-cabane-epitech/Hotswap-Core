@@ -139,24 +139,78 @@ sudo dnf groupinstall "Development Tools"
 `base-devel` / `build-essential` fournissent `g++`, `gcc`, `make` et les headers
 standards (dont `dlfcn.h`, utilisé pour `dlopen`/`dlsym`/`dlclose`).
 
-## Build & lancement du prototype
+## Build & lancement
 
-Le build est gere par CMake et peut etre lance depuis la racine du depot :
+Le build est géré par CMake et se lance depuis la racine du dépôt :
 
 ```bash
 ./build.sh
 ```
 
-Le script genere `build/` pour les fichiers CMake et place les binaires du prototype
-a la racine du depot :
+Les binaires sont placés à la racine. Le Runtime et le Watcher sont deux processus
+distincts, à lancer dans deux terminaux :
 
 ```bash
-# Lancer le FileWatcher et le programme hote
-./FileWatcher ./main
+# terminal 1 — l'application hôte, qui détient l'état de session
+./main
+
+# terminal 2 — le watcher, qui recompile les sources du plugin en candidat
+./FileWatcher
 ```
 
-Une fois lancé, modifier `plugin.cpp` déclenche automatiquement sa recompilation en
-`libplugin.so`, rechargée par `main` sans interruption du processus.
+Le watcher surveille `src/plugin/` par défaut ; un autre dossier peut être passé en
+argument. Le chemin de la bibliothèque, le compilateur et le suffixe de plateforme
+sont fournis par CMake à la compilation — il n'y a plus de `.so` ni de `g++` codés
+en dur.
+
+Modifier `src/plugin/plugin.cpp` déclenche alors le cycle complet :
+
+```
+[Build]   plugin.cpp changed, building candidate...
+[Build]   Candidate published, waiting for Runtime validation.
+[Runtime] Candidate detected, running canary...
+[Runtime] Canary passed.
+[Runtime] Swap done, session state preserved.
+[Plugin]  counter = 8           ← reprend où il en était, il n'est pas reparti de zéro
+```
+
+Les messages du programme sont en anglais, la documentation reste en français.
+
+### Vérifier le filet de sécurité
+
+Le comportement qui distingue l'outil se constate en cassant volontairement le
+plugin, les deux processus étant lancés. Dans les trois cas, **l'hôte survit et
+continue sur la dernière version valide** :
+
+| Ce qu'on écrit dans `plugin_update` | Ce que fait le pipeline |
+|---|---|
+| `int *p = nullptr; *p = 42;` | `[Runtime] Canary rejected (signal).` |
+| `while (true) {}` | `[Runtime] Canary rejected (timeout).` |
+| `state->no_such_field = 1;` | `[Build] FAILED (exit 1)` + l'erreur du compilateur affichée |
+
+Tous les artefacts de runtime — bibliothèque active, candidat et logs — sont
+regroupés dans `.hotswap/`, à la racine du dépôt :
+
+```
+.hotswap/
+├── libplugin.dylib            # version active, chargée par le Runtime
+├── libplugin.dylib.candidate  # candidat en attente de validation
+├── libplugin.dylib.previous   # version précédente, pour le rollback
+├── canary.log                 # sortie du candidat exécuté par le canari
+└── build.log                  # stderr du compilateur
+```
+
+Le dossier est ignoré par git dans son ensemble ; le suffixe dépend de la
+plateforme (`.so` sur Linux, `.dylib` sur macOS).
+
+### État d'implémentation
+
+Le pipeline **Build → Canari → Swap / Rollback** est fonctionnel. Le protocole de
+statut par fichier JSON décrit ci-dessous ne l'est pas encore : les deux processus
+se coordonnent aujourd'hui par la seule présence du fichier candidat, et le
+reporting passe par la sortie standard. La sérialisation de l'état (section
+*Persistance et remapping*) n'est pas implémentée — l'état survit au rechargement,
+mais pas encore à un changement de layout de la struct.
 
 ## Protocole de statut (inter-composants)
 
@@ -267,7 +321,7 @@ duplication.**
 ### Fichiers
 
 ```
-build/
+.hotswap/
 ├── plugin.so             # version active, chargée par le Runtime
 ├── plugin.so.candidate   # nouvelle version en attente de validation
 ├── plugin.status.json    # source de vérité du pipeline pour ce module
@@ -286,10 +340,10 @@ en place, pour qu'aucun lecteur ne tombe sur un JSON à moitié écrit.
   "state": "sandbox_failed",
   "producer": "sandbox",
   "timestamp": "2026-08-25T14:32:10Z",
-  "candidate_path": "build/plugin.so.candidate",
-  "active_path": "build/plugin.so",
+  "candidate_path": ".hotswap/plugin.so.candidate",
+  "active_path": ".hotswap/plugin.so",
   "detail": { "reason": "signal", "signal": "SIGSEGV" },
-  "log_path": "build/plugin.log"
+  "log_path": ".hotswap/plugin.log"
 }
 ```
 
