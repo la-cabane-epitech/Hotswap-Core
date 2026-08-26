@@ -1,0 +1,21 @@
+# Build
+build/
+cmake-build-*/
+
+# Binaires & artefacts
+*.o
+*.so
+*.dylib
+*.dll
+a.out
+main
+FileWatcher
+
+# Conan
+conan_toolchain.cmake
+conanbuild*
+conanrun*
+CMakeUserPresets.json
+
+# macOS
+.DS_Store
