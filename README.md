@@ -13,6 +13,14 @@ Le dépôt contient actuellement un prototype (`Prototype/CPP/`) avec deux briqu
 - `Sandbox/` : valide un `.so` candidat dans un process isolé (fork + timeout) avant de
   le promouvoir en `libplugin.so` — voir `Prototype/CPP/Sandbox/README`.
 
+### Convention : quels fichiers appartiennent au plugin
+
+Le module rechargeable ("plugin") peut être composé de **plusieurs fichiers `.cpp`**.
+`Core::onFileChanged` compile ensemble tous les `.cpp` du dossier surveillé, sauf ceux
+qui composent le binaire hôte lui-même (`main.cpp`, `DLLoader.cpp` — liste en dur dans
+`Core.hpp`). Modifier n'importe lequel des autres `.cpp` (`plugin.cpp`, `Calcul.cpp`, ...)
+déclenche la recompilation de tout le module, pas juste du fichier modifié.
+
 ## Prérequis
 
 Le projet cible **Linux** (utilise `dlfcn.h` pour le chargement dynamique et
@@ -66,8 +74,9 @@ cd ../test1
 # 2. Compiler le programme hôte
 g++ -std=c++17 -o main main.cpp DLLoader.cpp -ldl
 
-# 3. Compiler la lib plugin de base (sera rechargée à chaud à chaque modification)
-g++ -std=c++17 -shared -fPIC -o libplugin.so plugin.cpp
+# 3. Compiler la lib plugin de base (tous les .cpp du module, sera rechargée
+#    à chaud à chaque modification de l'un d'eux)
+g++ -std=c++17 -shared -fPIC -o libplugin.so plugin.cpp Calcul.cpp
 
 # 4. Lancer : le FileWatcher surveille le dossier, build/valide/promeut, et
 #    pilote le programme hôte
