@@ -31,8 +31,11 @@ jobs:
           sudo apt-get install -y doxygen graphviz
 
       - name: Generate Documentation
-        # Ensure Doxyfile is at the root or update the path here
-        run: doxygen Doxyfile
+        # Doxygen only creates one directory level, so the parent must already
+        # exist before OUTPUT_DIRECTORY can be created.
+        run: |
+          mkdir -p Document/doc_generated
+          doxygen Doxyfile
 
       - name: Upload Artifact
         uses: actions/upload-pages-artifact@v3

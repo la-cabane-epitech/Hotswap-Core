@@ -14,7 +14,7 @@ DOXYFILE_ENCODING      = UTF-8
 # only document signatures, and the prose is what actually explains the project.
 INPUT                  = src \
                          README.md \
-                         docs/MoSCoW.md
+                         docs
 
 RECURSIVE              = YES
 FILE_PATTERNS          = *.hpp *.cpp *.md
