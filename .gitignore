@@ -24,3 +24,5 @@ CMakeUserPresets.json
 
 # macOS
 .DS_Store
+# Doxygen generated output
+/Document/

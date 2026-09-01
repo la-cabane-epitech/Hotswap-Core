@@ -1,0 +1,64 @@
+#---------------------------------------------------------------------------
+# HOTSWAP-CORE - DOXYGEN CONFIGURATION
+#---------------------------------------------------------------------------
+
+# --- General information ---
+PROJECT_NAME           = "Hotswap-Core"
+PROJECT_BRIEF          = "C++ hot reloading: swap code without losing session state"
+OUTPUT_DIRECTORY       = Document/doc_generated
+OUTPUT_LANGUAGE        = English
+DOXYFILE_ENCODING      = UTF-8
+
+# --- Inputs ---
+# The three components, plus the design documentation: Doxygen on its own would
+# only document signatures, and the prose is what actually explains the project.
+INPUT                  = src \
+                         README.md \
+                         docs/MoSCoW.md
+
+RECURSIVE              = YES
+FILE_PATTERNS          = *.hpp *.cpp *.md
+
+# --- Exclusions ---
+# build/ and .hotswap/ hold generated artifacts only. Document/ is Doxygen's own
+# output: including it would make each run feed on the previous one.
+EXCLUDE                = build \
+                         .hotswap \
+                         Document \
+                         cmake-build-debug \
+                         CMakeFiles \
+                         _deps
+
+# --- Documentation extraction ---
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = YES
+EXTRACT_STATIC         = YES
+SORT_MEMBER_DOCS       = NO
+
+# --- Layout and navigation ---
+USE_MDFILE_AS_MAINPAGE = README.md
+GENERATE_TREEVIEW      = YES
+DISABLE_INDEX          = NO
+FULL_SIDEBAR           = YES
+HTML_COLORSTYLE        = TOGGLE
+
+# --- Graphs and diagrams (requires Graphviz / dot) ---
+HAVE_DOT               = YES
+CLASS_GRAPH            = YES
+COLLABORATION_GRAPH    = YES
+UML_LOOK               = YES
+UML_LIMIT_NUM_FIELDS   = 15
+INCLUDE_GRAPH          = YES
+INCLUDED_BY_GRAPH      = YES
+CALL_GRAPH             = YES
+CALLER_GRAPH           = YES
+
+# --- Output formats ---
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+
+# --- Warnings ---
+# EXTRACT_ALL = YES would otherwise emit one warning per undocumented symbol
+# and drown the CI log.
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO
