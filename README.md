@@ -2,13 +2,18 @@
 
 Outil de **hot reloading** pour C++ : recharge à chaud une bibliothèque partagée
 dans un programme qui tourne, sans le redémarrer et **sans lui faire perdre son
-état de session**.
+état de session** — y compris lorsque la structure de cet état change entre deux
+versions.
 
-Le hot reload seul est un mécanisme connu. Ce que ce projet apporte est le filet
-de sécurité autour : avant tout échange, la nouvelle version est exécutée par un
-**canari** — un processus enfant jetable. Si elle plante, boucle à l'infini ou ne
-compile pas, l'application continue sur la dernière version valide, sans rien
-perdre.
+Le hot reload seul est un mécanisme connu, et beaucoup de projets le font déjà à
+la main. Ce que cet outil apporte est la **conservation de l'état à travers le
+rechargement** : un snapshot auto-descriptif transfère les valeurs de l'ancienne
+version vers la nouvelle, champ par champ, même quand la struct a changé de
+layout — sans quoi le rechargement fait perdre exactement ce qu'il devait
+préserver. En bonus de cette promesse, un **canari** — un processus enfant
+jetable — valide chaque candidat avant de l'adopter : s'il plante, boucle à
+l'infini ou ne compile pas, l'application continue sur la dernière version
+valide, sans rien perdre.
 
 Le dépôt contient trois composants :
 
@@ -111,14 +116,17 @@ plateforme (`.so` sur Linux, `.dylib` sur macOS).
 
 ### État d'implémentation
 
-Le pipeline **Build → Canari → Swap / Rollback** est fonctionnel.
+Le filet de sécurité est fonctionnel : le pipeline **Build → Canari →
+Swap / Rollback** tourne déjà ([DLLoader.cpp](src/host/DLLoader.cpp)). C'est un
+bonus livré tôt — pas le cœur du projet.
 
-Deux choses spécifiées dans `docs/` ne le sont pas encore. Le protocole de statut
-par fichier JSON ([protocole.md](docs/protocole.md)) : les deux processus se
-coordonnent aujourd'hui par la seule présence du fichier candidat, et le reporting
-passe par la sortie standard. Et la sérialisation de l'état
-([etat.md](docs/etat.md)) : l'état survit au rechargement, mais pas encore à un
-changement de layout de la struct.
+**Le cœur du projet reste à construire.** La sérialisation de l'état avec
+remapping par nom de champ ([etat.md](docs/etat.md)) n'est pas codée : l'état
+survit aujourd'hui au rechargement tant que le layout de la struct ne change pas
+— ce qui est exactement le cas que la conservation d'état doit couvrir. Le
+protocole de statut par fichier JSON ([protocole.md](docs/protocole.md)) n'est
+pas non plus codé : les deux processus se coordonnent pour l'instant par la seule
+présence du fichier candidat.
 
 ## Documentation
 

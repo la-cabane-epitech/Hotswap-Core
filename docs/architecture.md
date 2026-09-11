@@ -13,9 +13,12 @@ bibliothèque partagée derrière une frontière `extern "C"`, et l'état persis
 possédé par le programme hôte, jamais par le plugin.
 
 Le hot reload en lui-même est un mécanisme connu, et le prototype le fait déjà. Ce
-que le projet apporte est le **filet de sécurité autour** : un rechargement à chaud
-qui ne peut pas faire perdre l'état de la session, même quand le code rechargé est
-faux. C'est l'objet du protocole décrit plus bas.
+que le projet apporte est la **conservation de l'état de session à travers le
+rechargement, y compris quand sa structure change** — c'est l'objet de la
+sérialisation et du remapping décrits dans [etat.md](etat.md). Un **canari**
+valide chaque candidat avant adoption, en bonus de cette promesse : il protège la
+session pendant qu'elle est conservée, il n'est pas la raison pour laquelle elle
+l'est. C'est l'objet du protocole décrit plus bas.
 
 Et parce que cet état est sérialisable, il devient manipulable : snapshots nommés,
 retour à un état antérieur, survie au crash de l'hôte, export d'une session pour

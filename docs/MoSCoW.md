@@ -23,20 +23,27 @@ L'approche inverse — recharger du C++ arbitraire dans un process sans toucher 
 architecture (Live++, Unreal Live Coding) — est hors périmètre. Voir *Won't Have*.
 
 **Le différenciateur du projet n'est pas le hot reload lui-même** — il est connu et
-déjà implémenté dans le prototype — **mais le filet de sécurité autour** : un
-rechargement à chaud qui ne peut pas faire perdre l'état de la session, même quand
-le code rechargé est faux.
+déjà implémenté dans le prototype — **mais la conservation de l'état de session à
+travers le rechargement, y compris quand la structure de cet état change entre
+deux versions.** Un outil qui ne perd jamais l'état mais ne recharge que du code au
+layout inchangé n'a résolu que la moitié du problème. Le canari (item 4) est un
+filet de sécurité posé autour de cette promesse — il évite qu'un candidat fautif
+emporte la session — mais il ne la constitue pas.
 
 ---
 
 ## Must Have
+
+C'est ici que vit la promesse centrale : le code peut changer de layout de donnée
+sans faire perdre l'état de session. Le canari (item 4) est en *Should Have* — il
+protège cette promesse sans la constituer.
 
 | # | Item | État |
 |---|---|---|
 | 1 | Mécanisme de hot reloading | ✅ fait |
 | 2 | Détection automatique (File Watcher) | ✅ fait |
 | 3 | Build configurable | à faire |
-| 4 | Canari de validation | à faire |
+| 7 | Sérialisation de l'état et remapping par nom de champ | à faire — **priorité 1** |
 | 5 | Gestionnaire de transition | à faire |
 | 6 | Reporting d'erreur | à faire |
 
@@ -60,56 +67,11 @@ Inclut la forme du livrable : un `hotswap run ./mon_app` qui lit la configuratio
 et supervise les processus. Tant que le livrable est un jeu de binaires posés à la
 racine, il n'y a pas d'usage quotidien possible.
 
-**4. Canari de validation.** Avant tout swap, le candidat est chargé et exécuté
-dans un processus enfant issu d'un `fork()` **du Runtime**, sous timeout. L'enfant
-`dlopen` le candidat, appelle le point d'entrée N fois sur la copie *copy-on-write*
-de l'état, et sort ; le parent lit le code de sortie.
-
-Le `fork()` doit venir du Runtime et pas d'un programme tiers : l'état vivant
-n'existe que dans sa mémoire, et c'est contre cet état-là qu'il faut valider — un
-candidat qui passe sur un état par défaut mais segfault sur l'état réel de la
-session ne prouve rien. La Sandbox est donc une étape du pipeline, pas un
-quatrième programme.
-
-Cette étape attrape les trois classes de fautes qu'un compilateur ne peut pas voir
-et qui tuent l'hôte : le **segfault**, la **boucle infinie** (couverte par le
-timeout — l'ancien item *Time-out de Sandbox* est fusionné ici, un canari sans
-timeout ne sert à rien), et les **symboles manquants ou incompatibles** à la
-résolution. Elle couvre aussi une désérialisation d'état fautive (item 7).
-
-*Remplace l'ancienne « Sandbox de Validation » qui exécutait les tests
-unitaires/fonctionnels du projet. Motif : faire tourner une suite de tests à chaque
-`Ctrl+S` ajoute des secondes au cycle que l'outil cherche justement à raccourcir,
-et suppose des tests à jour sur le code qu'on est en train de casser. C'est une
-exigence de CI transposée par erreur dans une boucle de développement. Le canari
-coûte quelques millisecondes et ne demande aucun test à écrire.* La version avec
-suite de tests devient un Could Have.
-
-**Limite à documenter côté utilisateur : le canari ne contient rien.** L'enfant a
-les mêmes droits que le parent, donc les effets de bord du candidat sont réels et
-dupliqués — un fichier écrit, une requête réseau, une base touchée le sont deux
-fois. Le code placé derrière la frontière doit être pauvre en effets de bord. Et le
-canari prouve seulement que le candidat n'a pas planté sur cet état-là : il protège
-la session, il ne valide pas la correction du code.
-
-**5. Gestionnaire de transition.** Si le canari passe, on swappe ; sinon on reste
-sur l'ancienne version et on émet un `rolled_back`. Le runtime ne swappe jamais un
-candidat dont le statut n'est pas explicitement `sandbox_passed`. Machine à états
-et protocole de statut inter-processus déjà spécifiés dans le `README.md`.
-
-**6. Reporting d'erreur.** Affichage de l'erreur dans l'outil — stderr de
-compilation, ou cause du rejet par le canari (signal, timeout, code de sortie) —
-pour éviter au développeur d'aller la chercher dans les fichiers système.
-*Note : les erreurs de compilation ne passent pas par le canari. Un échec de build
-est détecté au code de retour du compilateur et court-circuite le pipeline ; il
-n'y a pas de `.so` à valider. Le reporting est un consommateur du protocole de
-statut, pas une étape de validation.*
-
----
-
-## Should Have
-
 ### 7. Sérialisation de l'état et remapping par nom de champ
+
+**C'est le cœur du projet.** Sans lui, l'outil ne recharge que du code dont la
+struct d'état n'a pas bougé — exactement le cas le moins intéressant, puisque dans
+ce cas le simple `dlopen`/`dlclose` suffit déjà.
 
 Transférer les valeurs de l'ancienne version vers la nouvelle pour ne pas perdre le
 contexte de debug, **y compris quand la struct d'état change de layout**.
@@ -185,6 +147,67 @@ migration écrit à la main reste l'échappatoire pour les changements **sémant
 — un champ qui change d'unité, un champ scindé en deux — qu'aucune correspondance
 par nom ne peut deviner.
 
+**5. Gestionnaire de transition.** Si le candidat est adopté, on swappe ; sinon on
+reste sur l'ancienne version et on émet un `rolled_back`. Le runtime ne swappe
+jamais un candidat qui n'a pas explicitement passé sa validation. Machine à états
+et protocole de statut inter-processus déjà spécifiés dans le `README.md`.
+
+**6. Reporting d'erreur.** Affichage de l'erreur dans l'outil — stderr de
+compilation, échec de relecture d'un snapshot, ou rejet par le canari s'il est
+actif (signal, timeout, code de sortie) — pour éviter au développeur d'aller la
+chercher dans les fichiers système. *Note : les erreurs de compilation ne passent
+pas par le canari. Un échec de build est détecté au code de retour du compilateur
+et court-circuite le pipeline ; il n'y a pas de `.so` à valider. Le reporting est
+un consommateur du protocole de statut, pas une étape de validation.*
+
+---
+
+## Should Have
+
+Le canari est un filet de sécurité autour de la promesse centrale : il évite qu'un
+candidat fautif emporte la session. Il est déjà livré et ne coûte rien à garder,
+mais il n'est pas ce qui distingue l'outil — un rechargement qui perd la session à
+chaque changement de struct serait tout aussi cassé, et c'est l'item 7 qui traite
+ce cas.
+
+### 4. Canari de validation — le filet de sécurité
+
+Avant tout swap, le candidat est chargé et exécuté dans un processus enfant issu
+d'un `fork()` **du Runtime**, sous timeout. L'enfant `dlopen` le candidat, appelle
+le point d'entrée N fois sur la copie *copy-on-write* de l'état, et sort ; le
+parent lit le code de sortie.
+
+Le `fork()` doit venir du Runtime et pas d'un programme tiers : l'état vivant
+n'existe que dans sa mémoire, et c'est contre cet état-là qu'il faut valider — un
+candidat qui passe sur un état par défaut mais segfault sur l'état réel de la
+session ne prouve rien. La Sandbox est donc une étape du pipeline, pas un
+quatrième programme.
+
+Cette étape attrape les trois classes de fautes qu'un compilateur ne peut pas voir
+et qui tuent l'hôte : le **segfault**, la **boucle infinie** (couverte par le
+timeout, un canari sans timeout ne sert à rien), et les **symboles manquants ou
+incompatibles** à la résolution. Elle couvre aussi une désérialisation d'état
+fautive (item 7).
+
+*Remplace l'ancienne « Sandbox de Validation » qui exécutait les tests
+unitaires/fonctionnels du projet. Motif : faire tourner une suite de tests à chaque
+`Ctrl+S` ajoute des secondes au cycle que l'outil cherche justement à raccourcir,
+et suppose des tests à jour sur le code qu'on est en train de casser. C'est une
+exigence de CI transposée par erreur dans une boucle de développement. Le canari
+coûte quelques millisecondes et ne demande aucun test à écrire.* La version avec
+suite de tests devient un Could Have.
+
+**Limite à documenter côté utilisateur : le canari ne contient rien.** L'enfant a
+les mêmes droits que le parent, donc les effets de bord du candidat sont réels et
+dupliqués — un fichier écrit, une requête réseau, une base touchée le sont deux
+fois. Le code placé derrière la frontière doit être pauvre en effets de bord. Et le
+canari prouve seulement que le candidat n'a pas planté sur cet état-là : il protège
+la session, il ne valide pas la correction du code.
+
+**Déjà livré.** Le pipeline *Build → Canari → Swap / Rollback* tourne dans
+`src/host/DLLoader.cpp`. Rien à faire ici à court terme ; l'effort de l'équipe va
+sur l'item 7.
+
 ### 8. Snapshots nommés et restauration
 
 Sauvegarder l'état sous un nom et y revenir à la demande : *« recharge le code et
@@ -228,17 +251,6 @@ parallèle. Ne présente d'intérêt qu'une fois l'item 11 livré.
 
 ## Won't Have
 
-**15. Remapping automatique inféré depuis les informations de debug.** Découvrir
-seul qu'un type a changé de layout en lisant le DWARF, retrouver tous les objets
-vivants de ce type sur le tas, les réallouer et corriger tous les pointeurs qui les
-visaient — vtables, pointeurs vers l'intérieur d'un objet et conteneurs dont le
-layout dépend de `T` compris.
-
-*Motif : c'est un projet à part entière — la référence du domaine, Live++,
-représente une décennie de travail d'un ingénieur spécialisé. Et l'item 7 le rend
-inutile : un snapshot qui porte les noms de ses champs n'a pas besoin qu'on lui
-explique l'ancien layout.*
-
 **16. Hot reload sur une codebase non instrumentée.** Recharger du C++ arbitraire
 dans un process qui tourne sans imposer l'architecture plugin. Conséquence directe
 de la décision d'architecture en tête de document.
@@ -265,6 +277,21 @@ la mise en production.
    nul dans le plugin, sauvegarder, montrer l'hôte qui encaisse, signale, et
    continue sur la version précédente sans perdre son état — puis ajouter un champ
    au milieu de la struct pour montrer le remapping.
+3. **Remapping automatique inféré depuis les informations de debug (ex-item 15).**
+   Découvrir seul qu'un type a changé de layout en lisant le DWARF, retrouver tous
+   les objets vivants de ce type sur le tas, les réallouer et corriger tous les
+   pointeurs qui les visaient — vtables, pointeurs vers l'intérieur d'un objet et
+   conteneurs dont le layout dépend de `T` compris.
+
+   Pas classé en Won't Have : à rediscuter en équipe avant de le fermer
+   définitivement. Éléments à mettre dans la balance — le remapping par l'item 7
+   couvre déjà le besoin fonctionnel sans ça ; la version complète (parcours du
+   tas, réparation de pointeurs, vtables) est du même ordre de grandeur qu'un
+   ramasse-miettes à compaction, ce que Live++ lui-même ne résout pas dans sa
+   forme la plus générale. Mais rien n'empêche une version plus étroite plus
+   tard — lire le DWARF seulement pour la liste des champs d'un struct, en
+   alternative à la macro `REFLECT` (voir item 7) — sans aller jusqu'au parcours
+   du tas.
 
 ## Jalons de dérisquage
 

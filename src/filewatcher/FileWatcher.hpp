@@ -15,7 +15,11 @@
 #include <thread>
 #include <unordered_map>
 
-enum class FileStatus { created, modified, erased };
+enum class FileStatus {
+    created,
+    modified,
+    erased
+};
 
 class FileWatcher {
 public:
