@@ -133,6 +133,7 @@ présence du fichier candidat.
 | Document | Contenu |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Périmètre, à qui ça s'adresse, coût du portage, pattern de frontière |
+| [docs/abi.md](docs/abi.md) | Contrat binaire plugin/hôte : symboles exportés, signatures, qui appelle quoi et quand |
 | [docs/protocole.md](docs/protocole.md) | Pipeline Build → Canari → Swap, machine à états, format de statut |
 | [docs/etat.md](docs/etat.md) | Persistance de l'état, sérialisation, remapping de structure |
 | [docs/MoSCoW.md](docs/MoSCoW.md) | Périmètre fonctionnel : Must / Should / Could / Won't |
