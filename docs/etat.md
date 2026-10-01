@@ -78,6 +78,8 @@ La migration n'a pas d'état dédié, volontairement : elle est atomique du poin
 vue d'un lecteur du statut, et un état intermédiaire ne serait observable que
 quelques microsecondes pour le coût d'une écriture fichier. Elle est tracée dans le
 `detail` de `swapped` via `state_version_from` et `state_version_to`. Un échec de
-relecture est déjà attrapé en amont par le canari (`sandbox_failed`,
-`reason: "state_load"`), et converge donc vers `rolled_back` comme n'importe quel
-autre échec.
+relecture (`plugin_state_load` qui rend `false`) est traité par le gestionnaire de
+transition comme n'importe quel échec de promotion — même rollback qu'un
+`dlopen`/`dlsym` qui échoue. Un `plugin_state_load` qui plante, en revanche, fait
+tomber le process : il n'y a plus de canari pour l'absorber, voir *Historique*
+dans [protocole.md](protocole.md).

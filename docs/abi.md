@@ -12,17 +12,18 @@ appels.
 À distinguer de la communication inter-processus décrite dans
 [protocole.md](protocole.md) : cette ABI ne traverse pas de processus, elle
 traverse `dlsym()` — une frontière *intra-processus*, entre le binaire du
-Runtime (ou de son canari) et le `.so` chargé en mémoire.
+Runtime et le `.so` chargé en mémoire.
 
 ## Convention
 
 Tous les symboles sont `extern "C"` : pas de name mangling C++, pas de
 surcharge, pas de template. Le Runtime les résout par nom via `dlsym()`
-(`DLLoader.cpp:134,208`) — renommer une fonction côté plugin sans mettre à
-jour l'appelant ne produit pas une erreur de compilation, mais un
-`dlsym(plugin_update): symbol not found` au runtime, rattrapé comme
-`sandbox_failed { reason: "symbol" }` si ça arrive sur un candidat, ou comme
-un swap qui échoue silencieusement si ça arrive ailleurs.
+(`DLLoader.cpp`, dans `load_active()`) — renommer une fonction côté plugin
+sans mettre à jour l'appelant ne produit pas une erreur de compilation, mais
+un `dlsym(plugin_update): symbol not found` au runtime. Sur le candidat, ça
+fait échouer la promotion et le Runtime reste sur l'ancienne version (voir
+*Qui appelle `plugin_update`* ci-dessous) ; il n'y a pas d'étape de
+validation séparée qui l'attraperait plus tôt.
 
 ## Surface actuelle — implémentée
 
@@ -40,10 +41,10 @@ extern "C" void plugin_update(State* state);
 |---|---|
 | Propriétaire de `State` | Le Runtime (`main.cpp:27`, alloué sur la pile de `main`). Le plugin ne fait jamais que le recevoir par pointeur. |
 | Durée de vie de `State` | Celle du processus hôte. Elle ne dépend d'aucune version du plugin chargée. |
-| Qui appelle `plugin_update` | Le Runtime, une fois par itération de sa boucle principale (`main.cpp:41`) ; le canari, trois fois de suite sous un timeout de 2 s pendant la validation d'un candidat (`DLLoader.cpp:18-20,140`). |
+| Qui appelle `plugin_update` | Le Runtime, une fois par itération de sa boucle principale (`main.cpp:41`) — c'est le seul appelant. Aucune exécution de validation séparée n'a lieu avant : le premier appel sur un candidat promu est le même que tous les suivants. |
 | Contrat de layout | **Implicite et non vérifié.** `State` doit avoir le même layout dans l'ancien et le nouveau `.so` — rien dans le code ne le garantit ni ne le détecte. Un changement de layout aujourd'hui n'est pas une erreur signalée, c'est une corruption silencieuse. |
-| Effets de bord | Dupliqués pendant le canari (même process réel, même droits) — voir *Limites du canari* dans [protocole.md](protocole.md). |
-| Ce que le plugin ne doit pas faire | Conserver le pointeur `state` au-delà de l'appel ; bloquer plus de 2 s (timeout canari) ; dépendre d'un état global interne au plugin, qui ne survit à aucun rechargement. |
+| Effets de bord | Réels, pour de vrai, dès le premier appel — pas de duplication à anticiper, mais pas de filet non plus si le code plante. |
+| Ce que le plugin ne doit pas faire | Conserver le pointeur `state` au-delà de l'appel ; dépendre d'un état global interne au plugin, qui ne survit à aucun rechargement ; segfaulter ou boucler sans fin — plus aucune étape n'absorbe ce cas, voir *Historique* dans [protocole.md](protocole.md). |
 
 ## Surface prévue — spécifiée, pas codée
 
@@ -63,7 +64,7 @@ extern "C" bool   plugin_state_load(void* state, const char* in, size_t len);
 | `plugin_state_version` | ancienne **et** nouvelle version | avant toute décision de swap | Si les deux versions rendent la même valeur, le Runtime swap le code seul — aucune sérialisation, chemin à ~0 ms. |
 | `plugin_state_size` | nouvelle version | après `dlopen`, avant allocation | Donne au Runtime la taille du buffer opaque à allouer pour la nouvelle struct. |
 | `plugin_state_save` | **ancienne** version | juste avant `dlclose` | Sérialise l'état courant dans un format auto-descriptif (nom de champ + valeur) — l'ancienne version est la seule à connaître son propre layout. |
-| `plugin_state_load` | **nouvelle** version | juste après `dlopen`, avant la reprise de la boucle | Relit le snapshot par nom de champ et remplit le nouveau buffer. Un échec ici est une faute de la même famille qu'un crash de `plugin_update` — voir `reason: "state_load"` dans le format de statut de [protocole.md](protocole.md). |
+| `plugin_state_load` | **nouvelle** version | juste après `dlopen`, avant la reprise de la boucle | Relit le snapshot par nom de champ et remplit le nouveau buffer. Un retour `false` doit être traité comme un échec de promotion ordinaire (rollback) ; un crash dans cette fonction, en revanche, fait tomber le process — voir *Historique* dans [protocole.md](protocole.md). |
 
 Séquencement strict à respecter à l'implémentation :
 
@@ -85,7 +86,7 @@ obtenue — ce choix ne change rien aux quatre signatures ci-dessus.
 
 | Erreur | Détectée comment |
 |---|---|
-| Renommer `plugin_update` sans recompiler l'appelant | `dlsym` échoue au runtime, jamais à la compilation. Rattrapé par le canari (`sandbox_failed`) si c'est sur un candidat. |
+| Renommer `plugin_update` sans recompiler l'appelant | `dlsym` échoue au runtime, jamais à la compilation. Sur un candidat, ça fait échouer la promotion (rollback automatique) ; il n'y a plus d'étape de validation séparée qui l'attraperait avant. |
 | Changer le layout de `State` sans l'ABI de version (aujourd'hui) | **Rien ne le détecte.** Lecture/écriture à de mauvais offsets, silencieux. |
 | Oublier un champ dans `REFLECT` (une fois codé) | Prévu : un `static_assert` doit comparer le nombre de champs listés au nombre réel de membres — erreur de compilation plutôt que champ perdu en silence. Pas encore implémenté. |
 | Garder un pointeur vers un objet polymorphe défini dans le plugin, à travers un `dlclose` | Le vtable pointe dans le `.so` déchargé ; le crash arrive plus tard, ailleurs, sans rapport apparent — voir *Le pattern de frontière* dans [architecture.md](architecture.md). |

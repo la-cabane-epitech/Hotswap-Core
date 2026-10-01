@@ -26,17 +26,20 @@ architecture (Live++, Unreal Live Coding) — est hors périmètre. Voir *Won't 
 déjà implémenté dans le prototype — **mais la conservation de l'état de session à
 travers le rechargement, y compris quand la structure de cet état change entre
 deux versions.** Un outil qui ne perd jamais l'état mais ne recharge que du code au
-layout inchangé n'a résolu que la moitié du problème. Le canari (item 4) est un
-filet de sécurité posé autour de cette promesse — il évite qu'un candidat fautif
-emporte la session — mais il ne la constitue pas.
+layout inchangé n'a résolu que la moitié du problème.
+
+Il n'y a pas de filet de sécurité autour de cette promesse. Un canari existait —
+un `fork()` du Runtime validant chaque candidat avant adoption — et a été retiré
+pour concentrer tout l'effort sur la promesse centrale plutôt que sur ce qui la
+protégerait. Voir *Won't Have*, item 4, pour ce qui existait et pourquoi.
 
 ---
 
 ## Must Have
 
 C'est ici que vit la promesse centrale : le code peut changer de layout de donnée
-sans faire perdre l'état de session. Le canari (item 4) est en *Should Have* — il
-protège cette promesse sans la constituer.
+sans faire perdre l'état de session. Aucune étape de validation ne protège cette
+promesse — voir item 4 en *Won't Have*.
 
 | # | Item | État |
 |---|---|---|
@@ -53,7 +56,7 @@ Implémenté dans `src/host/DLLoader.cpp` (`dlopen` / `dlsym` / `dlclose` pilot�
 le mtime du `.so`).
 
 **2. Détection automatique (File Watcher).** Déclenche le cycle
-*Build → Canari → Swap* dès qu'une sauvegarde est détectée. Implémenté dans
+*Build → Swap* dès qu'une sauvegarde est détectée. Implémenté dans
 `src/filewatcher/`. *Remonté de Should Have à Must Have : tout le pipeline est
 déclenché par lui, il n'est optionnel pour rien.*
 
@@ -147,66 +150,23 @@ migration écrit à la main reste l'échappatoire pour les changements **sémant
 — un champ qui change d'unité, un champ scindé en deux — qu'aucune correspondance
 par nom ne peut deviner.
 
-**5. Gestionnaire de transition.** Si le candidat est adopté, on swappe ; sinon on
-reste sur l'ancienne version et on émet un `rolled_back`. Le runtime ne swappe
-jamais un candidat qui n'a pas explicitement passé sa validation. Machine à états
-et protocole de statut inter-processus déjà spécifiés dans le `README.md`.
+**5. Gestionnaire de transition.** Un candidat détecté est promu directement : son
+`.so` remplace l'actif, `dlopen`/`dlsym` sont retentés sur la nouvelle version. Si
+l'un des deux échoue — symbole manquant, fichier corrompu — on reste sur l'ancienne
+version et on émet un `rolled_back`. C'est le seul filet qui reste : il attrape un
+candidat qui ne charge pas, pas un candidat qui charge puis plante à l'exécution.
+Machine à états et protocole de statut inter-processus spécifiés dans
+[protocole.md](protocole.md).
 
 **6. Reporting d'erreur.** Affichage de l'erreur dans l'outil — stderr de
-compilation, échec de relecture d'un snapshot, ou rejet par le canari s'il est
-actif (signal, timeout, code de sortie) — pour éviter au développeur d'aller la
-chercher dans les fichiers système. *Note : les erreurs de compilation ne passent
-pas par le canari. Un échec de build est détecté au code de retour du compilateur
-et court-circuite le pipeline ; il n'y a pas de `.so` à valider. Le reporting est
-un consommateur du protocole de statut, pas une étape de validation.*
+compilation, échec de relecture d'un snapshot, échec de `dlopen`/`dlsym` sur un
+candidat promu — pour éviter au développeur d'aller la chercher dans les fichiers
+système. Le reporting est un consommateur du protocole de statut, pas une étape de
+validation.
 
 ---
 
 ## Should Have
-
-Le canari est un filet de sécurité autour de la promesse centrale : il évite qu'un
-candidat fautif emporte la session. Il est déjà livré et ne coûte rien à garder,
-mais il n'est pas ce qui distingue l'outil — un rechargement qui perd la session à
-chaque changement de struct serait tout aussi cassé, et c'est l'item 7 qui traite
-ce cas.
-
-### 4. Canari de validation — le filet de sécurité
-
-Avant tout swap, le candidat est chargé et exécuté dans un processus enfant issu
-d'un `fork()` **du Runtime**, sous timeout. L'enfant `dlopen` le candidat, appelle
-le point d'entrée N fois sur la copie *copy-on-write* de l'état, et sort ; le
-parent lit le code de sortie.
-
-Le `fork()` doit venir du Runtime et pas d'un programme tiers : l'état vivant
-n'existe que dans sa mémoire, et c'est contre cet état-là qu'il faut valider — un
-candidat qui passe sur un état par défaut mais segfault sur l'état réel de la
-session ne prouve rien. La Sandbox est donc une étape du pipeline, pas un
-quatrième programme.
-
-Cette étape attrape les trois classes de fautes qu'un compilateur ne peut pas voir
-et qui tuent l'hôte : le **segfault**, la **boucle infinie** (couverte par le
-timeout, un canari sans timeout ne sert à rien), et les **symboles manquants ou
-incompatibles** à la résolution. Elle couvre aussi une désérialisation d'état
-fautive (item 7).
-
-*Remplace l'ancienne « Sandbox de Validation » qui exécutait les tests
-unitaires/fonctionnels du projet. Motif : faire tourner une suite de tests à chaque
-`Ctrl+S` ajoute des secondes au cycle que l'outil cherche justement à raccourcir,
-et suppose des tests à jour sur le code qu'on est en train de casser. C'est une
-exigence de CI transposée par erreur dans une boucle de développement. Le canari
-coûte quelques millisecondes et ne demande aucun test à écrire.* La version avec
-suite de tests devient un Could Have.
-
-**Limite à documenter côté utilisateur : le canari ne contient rien.** L'enfant a
-les mêmes droits que le parent, donc les effets de bord du candidat sont réels et
-dupliqués — un fichier écrit, une requête réseau, une base touchée le sont deux
-fois. Le code placé derrière la frontière doit être pauvre en effets de bord. Et le
-canari prouve seulement que le candidat n'a pas planté sur cet état-là : il protège
-la session, il ne valide pas la correction du code.
-
-**Déjà livré.** Le pipeline *Build → Canari → Swap / Rollback* tourne dans
-`src/host/DLLoader.cpp`. Rien à faire ici à court terme ; l'effort de l'équipe va
-sur l'item 7.
 
 ### 8. Snapshots nommés et restauration
 
@@ -218,9 +178,8 @@ existant.
 ### 9. Survie au crash de l'hôte
 
 Snapshots périodiques en tâche de fond, et restauration au redémarrage. Étend la
-promesse au-delà de la frontière du plugin : aujourd'hui, si l'hôte plante pour une
-raison sans rapport avec le code rechargé, la session est perdue malgré tout le
-pipeline de validation.
+promesse au-delà de la frontière du plugin : aujourd'hui, si l'hôte plante — pour
+une raison liée au plugin rechargé ou non — la session est perdue.
 
 ### 10. Support multi-modules
 
@@ -234,12 +193,13 @@ calendrier se tend : l'ajouter plus tard ne coûtera pas de refonte.*
 ## Could Have
 
 **11. Sandbox avec suite de tests.** Exécution des tests unitaires/fonctionnels du
-projet sur le candidat, en plus du canari. Activée explicitement par les projets
-qui la veulent et qui acceptent la latence supplémentaire — jamais par défaut.
-*Rétrogradé depuis Must Have, voir item 4.*
+projet sur le candidat, avant adoption. Activée explicitement par les projets qui
+la veulent et qui acceptent la latence supplémentaire — jamais par défaut.
+*Seule forme de validation qui resterait envisageable sans réintroduire de
+canari, voir item 4 en Won't Have.*
 
-**12. Intégration IDE.** Extension VS Code pour souligner les erreurs de build et
-les rejets de canari directement dans le code source.
+**12. Intégration IDE.** Extension VS Code pour souligner les erreurs de build
+directement dans le code source.
 
 **13. Partage de session.** Exporter un snapshot dans un fichier qu'un collègue
 recharge chez lui pour reproduire un bug. Dépend de l'item 7.
@@ -251,18 +211,31 @@ parallèle. Ne présente d'intérêt qu'une fois l'item 11 livré.
 
 ## Won't Have
 
+**4. Canari de validation.** Avant tout swap, le candidat était chargé et exécuté
+dans un processus enfant issu d'un `fork()` **du Runtime**, sous timeout. L'enfant
+`dlopen` le candidat, appelait le point d'entrée N fois sur une copie
+*copy-on-write* de l'état réel, et sortait ; le parent lisait le code de sortie
+pour attraper trois classes de fautes qu'un compilateur ne peut pas voir —
+segfault, boucle infinie, symbole manquant — plus une désérialisation d'état
+fautive.
+
+**Retiré du projet.** Implémenté puis retiré pour concentrer tout l'effort sur la
+promesse centrale — la conservation de l'état à travers un changement de struct —
+plutôt que sur le filet qui l'entourait. Conséquence directe et assumée :
+un plugin qui compile mais segfault ou boucle une fois réellement appelé fait
+tomber le process hôte, pour de vrai. À revisiter si un besoin réel se présente ;
+voir l'implémentation passée dans l'historique git (`DLLoader.cpp` avant son
+retrait) et dans *Historique*, [protocole.md](protocole.md).
+
 **16. Hot reload sur une codebase non instrumentée.** Recharger du C++ arbitraire
 dans un process qui tourne sans imposer l'architecture plugin. Conséquence directe
 de la décision d'architecture en tête de document.
 
 **17. Compatibilité multi-OS.** Le projet cible Linux. Le chargeur repose sur
-`dlfcn.h` et le canari sur `fork()` ; Windows demanderait une réécriture du
-chargeur (`LoadLibrary`, verrouillage des PDB) et non un portage.
-
-*À noter pour la soutenance : l'item 7 lève le principal blocage technique, puisque
-le canari pourrait tourner sur un snapshot désérialisé dans un processus
-réellement indépendant plutôt que sur un `fork()`. Le portage devient crédible en
-v2 — c'est un choix de périmètre, pas une impasse.*
+`dlfcn.h` ; Windows demanderait une réécriture du chargeur (`LoadLibrary`,
+verrouillage des PDB) et non un portage. Le retrait du canari enlève la seule
+autre dépendance plateforme (`fork()`) : le blocage restant tient entièrement au
+chargeur, rien d'autre à traiter côté canari.
 
 **18. Gestion du déploiement final.** L'outil sert la boucle de développement, pas
 la mise en production.
@@ -273,10 +246,12 @@ la mise en production.
 
 1. **Comment un utilisateur installe-t-il l'outil et l'intègre-t-il à son projet ?**
    (L'item 3 fixe la forme du livrable, pas la distribution.)
-2. **Quelle est la démo de soutenance ?** Proposition : insérer un déréférencement
-   nul dans le plugin, sauvegarder, montrer l'hôte qui encaisse, signale, et
-   continue sur la version précédente sans perdre son état — puis ajouter un champ
-   au milieu de la struct pour montrer le remapping.
+2. **Quelle est la démo de soutenance ?** Proposition : modifier le plugin et
+   montrer le compteur qui continue sans redémarrer — puis ajouter un champ au
+   milieu de la struct pour montrer le remapping. *Mise à jour : l'ancienne
+   proposition montrait un déréférencement nul absorbé par le canari ; sans lui,
+   ce même scénario ferait planter l'hôte pour de vrai — `demo.sh` ne couvre plus
+   que le changement valide et l'échec de compilation.*
 3. **Remapping automatique inféré depuis les informations de debug (ex-item 15).**
    Découvrir seul qu'un type a changé de layout en lisant le DWARF, retrouver tous
    les objets vivants de ce type sur le tas, les réallouer et corriger tous les

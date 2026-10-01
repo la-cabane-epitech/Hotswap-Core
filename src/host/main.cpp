@@ -1,8 +1,10 @@
 /*
 ** Demo host application.
 **
-** It owns the session state (`app_state`) and never loses it: code is reloaded
-** underneath it, the data stays here.
+** It owns the session state (`app_state`) and never loses it across a valid
+** reload: code is reloaded underneath it, the data stays here. There is no
+** validation step before a candidate is promoted, though — a plugin that
+** crashes or hangs once called takes this process down for real.
 */
 
 #include <chrono>
@@ -34,7 +36,7 @@ int main()
     bool waiting_reported = false;
 
     while (true) {
-        plugin_loader.poll(&app_state);
+        plugin_loader.poll();
 
         if (plugin_loader.is_loaded()) {
             waiting_reported = false;

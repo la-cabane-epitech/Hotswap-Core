@@ -9,7 +9,6 @@ void plugin_update(State *state)
     state->counter++;
     std::cout << "[Plugin v1] counter = " << state->counter << std::endl;
 
-    /* Demo pacing only. The canary calls this function several times under a
-    ** timeout: a plugin sleeping too long here would be rejected. */
+    /* Demo pacing only, so the printed counter is readable. */
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
 }

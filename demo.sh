@@ -6,16 +6,18 @@
 #   STEP=3 ./demo.sh       fast pace, for rehearsing
 #
 # Starts the Runtime and the Watcher, then rewrites the plugin under their feet
-# to walk through four scenarios. Each one covers a failure mode the compiler
-# cannot report and that would otherwise kill the host process:
+# to walk through two scenarios:
 #
-#   1. valid change      -> canary passes, code is swapped, session state kept
-#   2. null dereference  -> canary rejects (signal),  host survives
-#   3. infinite loop     -> canary rejects (timeout), host survives
-#   4. compile error     -> build fails, no candidate is ever produced
+#   1. valid change      -> code swapped, session state kept
+#   2. compile error      -> build fails, no candidate is ever produced
 #
-# The point of the demo is the counter printed by the plugin: it never restarts,
-# which proves the host process was never restarted either.
+# There is no validation step before a candidate is promoted: a plugin that
+# compiles but crashes or hangs once called takes the Runtime down for real.
+# That used to be the third scenario here, caught by a canary; the canary was
+# removed, so this script no longer demonstrates it.
+#
+# The point of the demo is the counter printed by the plugin: it never
+# restarts, which proves the host process was never restarted either.
 #
 # plugin.cpp is restored on exit, Ctrl+C included.
 
@@ -70,39 +72,9 @@ sed -i.bak 's/Plugin v1/Plugin v2/' "$PLUGIN" && rm -f "$PLUGIN.bak"
 wait_step
 
 # --- 2 --------------------------------------------------------------------
-# Compiles cleanly. Loaded directly into the host, this would take the whole
-# process down along with the session state.
-say "SCENARIO 2 — the plugin segfaults  ${RED}(null dereference)${OFF}"
-echo "    Expected: canary rejected (signal), and the Runtime SURVIVES."
-cat > "$PLUGIN" <<'EOF'
-#include "plugin.hpp"
-#include <iostream>
-void plugin_update(State *state)
-{
-    state->counter++;
-    std::cout << "[Plugin BROKEN] " << state->counter << std::endl;
-    int *p = nullptr;
-    *p = 42;
-}
-EOF
-wait_step
-
-# --- 3 --------------------------------------------------------------------
-# Also compiles cleanly, and would freeze the host forever: the reload loop
-# would never get control back. Caught by the canary's timer, so this scenario
-# needs a couple of extra seconds.
-say "SCENARIO 3 — the plugin spins in an infinite loop"
-echo "    Expected: canary rejected (timeout) after 2 s, the Runtime SURVIVES."
-cat > "$PLUGIN" <<'EOF'
-#include "plugin.hpp"
-void plugin_update(State *state) { (void)state; while (true) {} }
-EOF
-sleep $((STEP + 2))
-
-# --- 4 --------------------------------------------------------------------
-# The only failure the compiler does catch. It never reaches the canary: with
-# no candidate produced, there is nothing to validate.
-say "SCENARIO 4 — the plugin does not compile"
+# The only failure the compiler does catch. It never produces a candidate, so
+# there is nothing for the Runtime to even consider.
+say "SCENARIO 2 — the plugin does not compile"
 echo "    Expected: build FAILED, no candidate produced, the Runtime SURVIVES."
 cat > "$PLUGIN" <<'EOF'
 #include "plugin.hpp"
@@ -110,17 +82,17 @@ void plugin_update(State *state) { state->no_such_field = 1; }
 EOF
 wait_step
 
-# --- 5 --------------------------------------------------------------------
+# --- 3 --------------------------------------------------------------------
 # Back to a working plugin: the host picks it up like any other candidate,
 # still on the same counter.
-say "SCENARIO 5 — back to a valid plugin"
+say "SCENARIO 3 — back to a valid plugin"
 cp "$BACKUP" "$PLUGIN"
 touch "$PLUGIN"
 wait_step
 
 printf '\n%s================= RESULT =================%s\n' "$BOLD" "$OFF"
 if kill -0 "$HOST_PID" 2>/dev/null; then
-    printf '%s  The Runtime survived all 3 failures.%s\n' "$GREEN" "$OFF"
+    printf '%s  The Runtime survived the compile-error scenario.%s\n' "$GREEN" "$OFF"
     printf "  It never restarted: the counter above never went back to its initial value.\n"
 else
     printf '%s  The Runtime died — the demo failed.%s\n' "$RED" "$OFF"

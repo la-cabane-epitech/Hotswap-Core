@@ -15,10 +15,14 @@ possédé par le programme hôte, jamais par le plugin.
 Le hot reload en lui-même est un mécanisme connu, et le prototype le fait déjà. Ce
 que le projet apporte est la **conservation de l'état de session à travers le
 rechargement, y compris quand sa structure change** — c'est l'objet de la
-sérialisation et du remapping décrits dans [etat.md](etat.md). Un **canari**
-valide chaque candidat avant adoption, en bonus de cette promesse : il protège la
-session pendant qu'elle est conservée, il n'est pas la raison pour laquelle elle
-l'est. C'est l'objet du protocole décrit plus bas.
+sérialisation et du remapping décrits dans [etat.md](etat.md).
+
+Il n'y a pas de filet de sécurité autour de cette promesse : un candidat qui
+compile et charge est promu directement, sans étape de validation. Un plugin
+qui plante ou boucle une fois réellement appelé fait tomber le process pour de
+vrai. Ce choix concentre l'effort sur la promesse centrale plutôt que sur ce
+qui la protégerait — voir *Historique* dans [protocole.md](protocole.md) pour
+ce qui existait et pourquoi ça a été retiré.
 
 Et parce que cet état est sérialisable, il devient manipulable : snapshots nommés,
 retour à un état antérieur, survie au crash de l'hôte, export d'une session pour

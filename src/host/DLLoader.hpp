@@ -6,11 +6,15 @@
 #include "plugin.hpp"
 
 /*
-** Runtime: owns the active plugin and validates candidates before adopting them.
+** Runtime: owns the active plugin and swaps it for a freshly built candidate
+** as soon as one appears on disk.
 **
-** A candidate is never loaded straight into this process. It first runs inside a
-** canary — a disposable forked child — and is only promoted if it comes back
-** alive. Any failure leaves the active version in place.
+** There is no validation step before adoption: a candidate that dlopen()s and
+** dlsym()s successfully is promoted directly. A candidate that crashes or
+** hangs once actually called does so in this process, for real — there used
+** to be a canary step forking off a disposable child to absorb exactly that;
+** it was removed to keep the project to its core promise (state survives a
+** reload, including a struct layout change). Revisit if a real need shows up.
 */
 class DLLoader {
 public:
@@ -22,34 +26,20 @@ public:
     DLLoader(const DLLoader&) = delete;
     DLLoader& operator=(const DLLoader&) = delete;
 
-    /* Loads the active version if needed, then validates and promotes any
-    ** pending candidate. `state` gives the canary a real dataset to run on. */
-    void poll(State* state);
+    /* Loads the active version if needed, then promotes any pending candidate. */
+    void poll();
 
     bool is_loaded() const { return _update != nullptr; }
     PluginUpdateFunc get_function() const { return _update; }
 
 private:
-    enum class Canary {
-        Passed,
-        LoadFailed,      /* dlopen failed */
-        SymbolMissing,   /* plugin_update not found */
-        Crashed,         /* killed by a signal (SIGSEGV, SIGABRT...) */
-        TimedOut,        /* SIGALRM: infinite loop */
-        ExitedNonZero,
-    };
-
-    bool   load_active();
-    void   unload();
-    void   promote();
-    Canary run_canary(const std::string &library, State *state) const;
-
-    static const char *reason(Canary result);
+    bool load_active();
+    void unload();
+    void promote();
 
     std::string _active_path;
     std::string _candidate_path;
     std::string _previous_path;
-    std::string _canary_log;
 
     void             *_handle          = nullptr;
     PluginUpdateFunc  _update          = nullptr;

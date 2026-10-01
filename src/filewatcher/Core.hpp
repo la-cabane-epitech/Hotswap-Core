@@ -22,9 +22,9 @@
 /*
 ** Build: produces a *candidate*, never the active library.
 **
-** Adopting that candidate is the Runtime's call, after its canary validates it.
-** Writing straight to the active library would leave the pipeline with no way
-** to roll back.
+** Adopting that candidate is the Runtime's call — it promotes it directly, with
+** no validation step first. Writing straight to the active library would leave
+** the pipeline with no way to roll back a load failure.
 */
 class Core {
 public:
