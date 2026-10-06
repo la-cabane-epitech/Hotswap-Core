@@ -7,9 +7,9 @@ Prérequis de lecture : [architecture.md](architecture.md) pour la frontière
 plugin, [protocole.md](protocole.md) pour le pipeline de validation.
 
 
-L'état de session survit au rechargement parce qu'il est **possédé par l'hôte**, qui
-ne le déréférence jamais : il en détient un buffer opaque, dont seul le plugin
-connaît le type.
+L'état de session survit au rechargement parce qu'il est **détenu par l'hôte**, qui
+ne le déréférence jamais : le plugin le crée, l'hôte en garde un pointeur opaque,
+et seul le plugin connaît son type.
 
 Tant que le layout de cet état ne change pas, il n'y a rien à faire — on remplace le
 code, on ne touche pas aux données. Le problème n'apparaît que quand la struct
@@ -50,16 +50,23 @@ de réflexion exploitable — du type `REFLECT(State, counter, speed)`.
 
 ### ABI du plugin
 
+Le contrat complet est dans [abi.md](abi.md), et sa source de vérité dans
+[`include/hotswap/abi.hpp`](../include/hotswap/abi.hpp). Les symboles qui portent
+la migration :
+
 ```c
-extern "C" int    plugin_state_version(void);
-extern "C" size_t plugin_state_size(void);
-extern "C" size_t plugin_state_save(const void* state, char* out, size_t cap);
-extern "C" bool   plugin_state_load(void* state, const char* in, size_t len);
+extern "C" uint64_t plugin_state_version(void);
+extern "C" void*    plugin_state_create(void);
+extern "C" void     plugin_state_destroy(void* state);
+extern "C" size_t   plugin_state_save(const void* state, char* out, size_t cap);
+extern "C" bool     plugin_state_load(void* state, const char* in, size_t len);
 ```
 
-Ordre des opérations, à ne pas inverser : le snapshot est produit par **l'ancien**
-plugin *avant* le `dlclose` — lui seul connaît l'ancien layout — puis relu par le
-**nouveau** après le `dlopen`.
+Ordre des opérations, garanti par le Runtime : le snapshot est produit par
+**l'ancien** plugin — lui seul connaît l'ancien layout — puis relu par le
+**nouveau** dans un état qu'il vient de créer. Les deux versions sont chargées en
+même temps pendant le swap ; l'ancien état est détruit par l'ancien code, avant
+son `dlclose`.
 
 ### Ce qui ne se sérialise pas
 
@@ -78,8 +85,8 @@ La migration n'a pas d'état dédié, volontairement : elle est atomique du poin
 vue d'un lecteur du statut, et un état intermédiaire ne serait observable que
 quelques microsecondes pour le coût d'une écriture fichier. Elle est tracée dans le
 `detail` de `swapped` via `state_version_from` et `state_version_to`. Un échec de
-relecture (`plugin_state_load` qui rend `false`) est traité par le gestionnaire de
-transition comme n'importe quel échec de promotion — même rollback qu'un
-`dlopen`/`dlsym` qui échoue. Un `plugin_state_load` qui plante, en revanche, fait
+relecture (`plugin_state_load` qui rend `false`) est traité comme n'importe quel
+échec de promotion — même rejet du candidat qu'un `dlopen`/`dlsym` qui échoue,
+la version active et son état ne sont pas touchés. Un `plugin_state_load` qui plante, en revanche, fait
 tomber le process : il n'y a plus de canari pour l'absorber, voir *Historique*
 dans [protocole.md](protocole.md).

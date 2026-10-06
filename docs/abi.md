@@ -1,9 +1,9 @@
 # ABI — la frontière plugin/hôte
 
-Ce document décrit le contrat binaire entre le Runtime et le `.so`/`.dylib` du
-plugin : les symboles que le plugin doit exporter, leur signature, qui les
-appelle, quand, et ce qui casse silencieusement si le contrat n'est pas
-respecté.
+Ce document décrit le contrat binaire entre le Runtime et la bibliothèque du
+plugin (`.so` sur Linux, `.dylib` sur macOS) : les symboles que le plugin doit
+exporter, leur signature, qui les appelle, quand, et ce qui casse si le contrat
+n'est pas respecté.
 
 Prérequis de lecture : [architecture.md](architecture.md) pour le pattern de
 frontière, [protocole.md](protocole.md) pour le pipeline qui déclenche ces
@@ -12,88 +12,102 @@ appels.
 À distinguer de la communication inter-processus décrite dans
 [protocole.md](protocole.md) : cette ABI ne traverse pas de processus, elle
 traverse `dlsym()` — une frontière *intra-processus*, entre le binaire du
-Runtime et le `.so` chargé en mémoire.
+Runtime et la bibliothèque chargée en mémoire. Le Watcher n'y participe pas.
 
-## Convention
+## Contrat figé
 
-Tous les symboles sont `extern "C"` : pas de name mangling C++, pas de
-surcharge, pas de template. Le Runtime les résout par nom via `dlsym()`
-(`DLLoader.cpp`, dans `load_active()`) — renommer une fonction côté plugin
-sans mettre à jour l'appelant ne produit pas une erreur de compilation, mais
-un `dlsym(plugin_update): symbol not found` au runtime. Sur le candidat, ça
-fait échouer la promotion et le Runtime reste sur l'ancienne version (voir
-*Qui appelle `plugin_update`* ci-dessous) ; il n'y a pas d'étape de
-validation séparée qui l'attraperait plus tôt.
-
-## Surface actuelle — implémentée
-
-Définie entièrement dans [`src/plugin/plugin.hpp`](../src/plugin/plugin.hpp).
+La source de vérité est [`include/hotswap/abi.hpp`](../include/hotswap/abi.hpp).
+**Le contrat est figé** : toute l'équipe code contre lui. Le modifier demande
+l'accord de toute l'équipe et l'incrémentation de `HOTSWAP_ABI_VERSION` — voir
+[chantiers.md](chantiers.md).
 
 ```c
-struct State {
-    int counter;
-};
-
-extern "C" void plugin_update(State* state);
+extern "C" int      hotswap_abi_version(void);
+extern "C" uint64_t plugin_state_version(void);
+extern "C" void*    plugin_state_create(void);
+extern "C" void     plugin_state_destroy(void* state);
+extern "C" size_t   plugin_state_save(const void* state, char* out, size_t cap);
+extern "C" bool     plugin_state_load(void* state, const char* in, size_t len);
+extern "C" void     plugin_update(void* state);
 ```
 
-| Élément | Propriété |
-|---|---|
-| Propriétaire de `State` | Le Runtime (`main.cpp:27`, alloué sur la pile de `main`). Le plugin ne fait jamais que le recevoir par pointeur. |
-| Durée de vie de `State` | Celle du processus hôte. Elle ne dépend d'aucune version du plugin chargée. |
-| Qui appelle `plugin_update` | Le Runtime, une fois par itération de sa boucle principale (`main.cpp:41`) — c'est le seul appelant. Aucune exécution de validation séparée n'a lieu avant : le premier appel sur un candidat promu est le même que tous les suivants. |
-| Contrat de layout | **Implicite et non vérifié.** `State` doit avoir le même layout dans l'ancien et le nouveau `.so` — rien dans le code ne le garantit ni ne le détecte. Un changement de layout aujourd'hui n'est pas une erreur signalée, c'est une corruption silencieuse. |
-| Effets de bord | Réels, pour de vrai, dès le premier appel — pas de duplication à anticiper, mais pas de filet non plus si le code plante. |
-| Ce que le plugin ne doit pas faire | Conserver le pointeur `state` au-delà de l'appel ; dépendre d'un état global interne au plugin, qui ne survit à aucun rechargement ; segfaulter ou boucler sans fin — plus aucune étape n'absorbe ce cas, voir *Historique* dans [protocole.md](protocole.md). |
-
-## Surface prévue — spécifiée, pas codée
-
-Quatre symboles supplémentaires, décrits dans [etat.md](etat.md), nécessaires
-pour que l'état survive à un changement de layout de `State` (MoSCoW item 7,
-cœur du projet). **Aucun n'existe dans le code aujourd'hui.**
-
-```c
-extern "C" int    plugin_state_version(void);
-extern "C" size_t plugin_state_size(void);
-extern "C" size_t plugin_state_save(const void* state, char* out, size_t cap);
-extern "C" bool   plugin_state_load(void* state, const char* in, size_t len);
-```
-
-| Symbole | Appelé sur | Quand | Rôle |
+| Symbole | Rôle | Appelé sur | Quand |
 |---|---|---|---|
-| `plugin_state_version` | ancienne **et** nouvelle version | avant toute décision de swap | Si les deux versions rendent la même valeur, le Runtime swap le code seul — aucune sérialisation, chemin à ~0 ms. |
-| `plugin_state_size` | nouvelle version | après `dlopen`, avant allocation | Donne au Runtime la taille du buffer opaque à allouer pour la nouvelle struct. |
-| `plugin_state_save` | **ancienne** version | juste avant `dlclose` | Sérialise l'état courant dans un format auto-descriptif (nom de champ + valeur) — l'ancienne version est la seule à connaître son propre layout. |
-| `plugin_state_load` | **nouvelle** version | juste après `dlopen`, avant la reprise de la boucle | Relit le snapshot par nom de champ et remplit le nouveau buffer. Un retour `false` doit être traité comme un échec de promotion ordinaire (rollback) ; un crash dans cette fonction, en revanche, fait tomber le process — voir *Historique* dans [protocole.md](protocole.md). |
+| `hotswap_abi_version` | Version du contrat. Un plugin compilé contre un autre header est refusé. | toute version chargée | juste après `dlopen` |
+| `plugin_state_version` | Identité du layout de l'état. Égalité entre deux versions → l'état est conservé tel quel. | toute version chargée | juste après `dlopen` |
+| `plugin_state_create` | Construit un état neuf, avec ses valeurs par défaut. | la nouvelle version | premier chargement, ou layout changé |
+| `plugin_state_destroy` | Détruit un état. | la version qui l'a créé, ou une de même layout | avant le `dlclose` de cette version |
+| `plugin_state_save` | Écrit un snapshot auto-descriptif (nom de champ + valeur). | l'**ancienne** version | layout changé, avant tout `dlclose` |
+| `plugin_state_load` | Relit un snapshot par nom de champ dans un état neuf. | la **nouvelle** version | layout changé, après `plugin_state_create` |
+| `plugin_update` | Le code rechargé. | la version active | à chaque tour de la boucle de l'hôte |
 
-Séquencement strict à respecter à l'implémentation :
+### Propriété de l'état
+
+L'état est **créé et détruit par le plugin**, **détenu par le Runtime** sous
+forme d'un `void*` qu'il ne déréférence jamais. Le type `State` n'existe que
+dans le plugin ([`src/plugin/plugin.hpp`](../src/plugin/plugin.hpp)) : l'hôte
+n'inclut pas ce header, et CMake ne lui en donne pas l'accès.
+
+C'est ce qui permet à la struct de changer de layout sans recompiler ni
+redémarrer l'hôte. La mémoire de l'état vit sur le tas du processus : elle
+survit au `dlclose`, seules les variables globales et statiques du plugin sont
+perdues.
+
+### `plugin_state_save` : convention de taille
+
+La fonction renvoie toujours le nombre d'octets nécessaires, et n'écrit dans
+`out` que si `cap` est suffisant — la convention de `snprintf`. Le Runtime
+l'appelle une première fois avec `cap = 0`, réserve la taille renvoyée, puis
+l'appelle à nouveau.
+
+## Séquence d'un swap
+
+Le candidat est ouvert **avant** la fermeture de la version active, sous un
+chemin propre à ce swap (`libplugin.dylib.gen<N>`). Les deux versions sont en
+mémoire en même temps : l'état peut passer de l'une à l'autre, et un échec ne
+touche jamais la version qui tourne.
 
 ```
-versions identiques     → dlclose(ancien) → dlopen(nouveau) → swap, rien sérialisé
-versions différentes    → plugin_state_save(ancien)   [avant dlclose]
-                        → dlclose(ancien) → dlopen(nouveau)
-                        → plugin_state_load(nouveau)   [avant tout plugin_update]
+dlopen(candidat) + dlsym de tous les symboles + contrôle de hotswap_abi_version
+│
+├─ aucun état encore       → create(nouveau)
+├─ même state_version      → l'état est conservé tel quel, rien n'est sérialisé (cas courant)
+└─ state_version différent → save(ancien) → create(nouveau) → load(nouveau, snapshot)
+                              puis destroy(ancien, ancien état)
+│
+dlclose(ancien), suppression de son fichier gen
+le candidat devient la version active ; sa copie remplace libplugin.dylib
 ```
 
-**Non résolu à ce jour :** la source de la liste {nom, type, offset} que
-`plugin_state_save`/`load` consomment — macro `REFLECT` déclarée à la main,
-ou parsing du DWARF du binaire compilé. Les deux produisent la même liste,
-voir [etat.md](etat.md) et [MoSCoW.md](MoSCoW.md) *Décisions ouvertes #3*. Ce
-document décrit le contrat d'appel, pas la façon dont la liste de champs est
-obtenue — ce choix ne change rien aux quatre signatures ci-dessus.
+Si une étape échoue avant le dernier bloc — `dlopen`, symbole manquant, ABI
+différente, `create` qui renvoie `nullptr`, `load` qui renvoie `false` — le
+candidat est jeté et la version active continue avec son état, intact.
 
-## Ce qui casse le contrat silencieusement
+Le chemin unique par swap n'est pas un détail : `dlopen()` reconnaît une
+bibliothèque déjà chargée à son chemin, et rouvrir un chemin déjà utilisé
+pourrait rendre l'ancien code. Le fichier chargé n'est jamais renommé ni
+réécrit ensuite, pour que les débogueurs le retrouvent.
 
-| Erreur | Détectée comment |
+Cette séquence est implémentée dans
+[`src/host/DLLoader.cpp`](../src/host/DLLoader.cpp) et couverte par
+[`tests/test_runtime.cpp`](../tests/test_runtime.cpp).
+
+## Règles pour écrire un plugin
+
+| Règle | Pourquoi |
 |---|---|
-| Renommer `plugin_update` sans recompiler l'appelant | `dlsym` échoue au runtime, jamais à la compilation. Sur un candidat, ça fait échouer la promotion (rollback automatique) ; il n'y a plus d'étape de validation séparée qui l'attraperait avant. |
-| Changer le layout de `State` sans l'ABI de version (aujourd'hui) | **Rien ne le détecte.** Lecture/écriture à de mauvais offsets, silencieux. |
-| Oublier un champ dans `REFLECT` (une fois codé) | Prévu : un `static_assert` doit comparer le nombre de champs listés au nombre réel de membres — erreur de compilation plutôt que champ perdu en silence. Pas encore implémenté. |
-| Garder un pointeur vers un objet polymorphe défini dans le plugin, à travers un `dlclose` | Le vtable pointe dans le `.so` déchargé ; le crash arrive plus tard, ailleurs, sans rapport apparent — voir *Le pattern de frontière* dans [architecture.md](architecture.md). |
+| Seuls des types C traversent la frontière : pointeurs, entiers, `bool`. | Un `std::string` dans une signature lie l'hôte et le plugin à la même version de la bibliothèque standard. |
+| Aucune exception ne sort d'une fonction exportée. | Une exception qui traverse la frontière n'a pas de comportement garanti. Attraper à l'intérieur, renvoyer un code d'erreur. |
+| `plugin_state_version` change dès qu'un champ est ajouté, supprimé, déplacé ou change de type. | Sinon le Runtime garde l'ancien état avec le nouveau layout : corruption mémoire silencieuse. |
+| `plugin_state_load` ne lit que par nom de champ. | Un format positionnel donne des valeurs fausses sans erreur dès qu'un champ est inséré. Voir [etat.md](etat.md). |
+| Ne pas garder le pointeur d'état, ni de pointeur vers du code du plugin, au-delà d'un appel. | Le code est démappé au `dlclose`. |
+| Pas d'état utile dans des variables globales ou statiques du plugin. | Elles repartent à leur valeur initiale à chaque rechargement. |
 
-## État d'implémentation de ce document
+## Ce qui reste à faire
 
-| Section | Statut |
+| Élément | État |
 |---|---|
-| Surface actuelle | Reflète le code tel qu'il est, vérifié ligne à ligne au moment de la rédaction. |
-| Surface prévue | Spécification reprise de [etat.md](etat.md) ; aucun symbole n'existe dans `src/`. |
+| Contrat, Runtime et séquence de swap | Fait, testé sur Linux et macOS. |
+| `plugin_state_version` calculé automatiquement depuis la liste des champs | À faire. Le plugin de démo renvoie une constante. |
+| `plugin_state_save` / `plugin_state_load` du plugin de démo | Bouchons : un changement de layout remet l'état à ses valeurs par défaut. C'est le chantier sérialisation, voir [chantiers.md](chantiers.md). |
+| Source de la liste des champs : macro maison ou bibliothèque | Décision ouverte, voir [MoSCoW.md](MoSCoW.md). |

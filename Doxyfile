@@ -10,9 +10,11 @@ OUTPUT_LANGUAGE        = English
 DOXYFILE_ENCODING      = UTF-8
 
 # --- Inputs ---
-# The three components, plus the design documentation: Doxygen on its own would
-# only document signatures, and the prose is what actually explains the project.
-INPUT                  = src \
+# The ABI contract and the three components, plus the design documentation:
+# Doxygen on its own would only document signatures, and the prose is what
+# actually explains the project.
+INPUT                  = include \
+                         src \
                          README.md \
                          docs
 

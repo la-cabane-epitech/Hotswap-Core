@@ -1,4 +1,4 @@
-name: Linux build
+name: Build & tests
 
 on:
   push:
@@ -6,7 +6,14 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # The team develops on both: a macOS-only regression must not wait for the
+    # one developer on macOS to stumble on it, and the same goes for Linux.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout repository
@@ -14,3 +21,6 @@ jobs:
 
       - name: Build project
         run: ./build.sh
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure

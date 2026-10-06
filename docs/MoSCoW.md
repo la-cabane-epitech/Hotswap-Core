@@ -46,8 +46,8 @@ promesse — voir item 4 en *Won't Have*.
 | 1 | Mécanisme de hot reloading | ✅ fait |
 | 2 | Détection automatique (File Watcher) | ✅ fait |
 | 3 | Build configurable | à faire |
-| 7 | Sérialisation de l'état et remapping par nom de champ | à faire — **priorité 1** |
-| 5 | Gestionnaire de transition | à faire |
+| 7 | Sérialisation de l'état et remapping par nom de champ | en cours — contrat et Runtime faits, sérialisation à faire — **priorité 1** |
+| 5 | Gestionnaire de transition | en partie — swap et rejet faits, statut JSON à faire |
 | 6 | Reporting d'erreur | à faire |
 
 **1. Mécanisme de hot reloading.** Compilation et rechargement dynamique d'une
@@ -62,8 +62,9 @@ déclenché par lui, il n'est optionnel pour rien.*
 
 **3. Build configurable.** La commande de compilation et les chemins surveillés
 doivent venir d'un fichier de configuration du projet, pas être codés en dur.
-Aujourd'hui `src/filewatcher/Core.hpp` appelle un `g++ -shared -fPIC` littéral :
-c'est acceptable pour un prototype, pas pour un produit installable.
+Aujourd'hui le compilateur vient de CMake, mais `src/filewatcher/Core.hpp` code
+en dur les options (`-std=c++17 -shared -fPIC`), les dossiers surveillés et les
+includes : c'est acceptable pour un prototype, pas pour un produit installable.
 *Nouvel item — sans lui, l'outil n'est utilisable que sur son propre dépôt.*
 
 Inclut la forme du livrable : un `hotswap run ./mon_app` qui lit la configuration
@@ -105,29 +106,27 @@ version d'état changée    →  snapshot → reload → relecture par nom      
 
 `plugin_state_version()` est l'aiguillage entre les deux.
 
-**ABI du plugin :**
+**ABI du plugin :** figée dans `include/hotswap/abi.hpp`, décrite dans
+[abi.md](abi.md). Le plugin crée et détruit l'état (`plugin_state_create` /
+`plugin_state_destroy`), le sérialise (`plugin_state_save` / `plugin_state_load`)
+et en annonce le layout (`plugin_state_version`).
 
-```c
-extern "C" int    plugin_state_version(void);
-extern "C" size_t plugin_state_size(void);
-extern "C" size_t plugin_state_save(const void* state, char* out, size_t cap);
-extern "C" bool   plugin_state_load(void* state, const char* in, size_t len);
-```
+Contrainte de séquencement, garantie par le Runtime : le snapshot est produit par
+**l'ancien** plugin — lui seul connaît l'ancien layout — et relu par le
+**nouveau**. Les deux versions sont chargées en même temps pendant le swap.
 
-Contrainte de séquencement à ne pas rater : le snapshot est produit par **l'ancien**
-plugin, avant le `dlclose` — lui seul connaît l'ancien layout — et relu par le
-**nouveau**, après le `dlopen`.
-
-**Conséquence architecturale.** L'hôte doit cesser de connaître le type de l'état.
-Aujourd'hui `src/host/main.cpp` déclare `State app_state = {0}` sur la pile : le
-layout est gravé dans le binaire de l'hôte à la compilation, donc modifier `State`
-impose de recompiler l'hôte, donc de le redémarrer, donc de perdre l'état qu'on
-voulait préserver. L'hôte possède un buffer opaque qu'il ne déréférence jamais.
+**Conséquence architecturale — faite.** L'hôte ne connaît plus le type de l'état :
+il détient un pointeur opaque créé par le plugin, qu'il ne déréférence jamais.
+Modifier `State` ne demande donc plus de recompiler ni de redémarrer l'hôte. Le
+plugin de démo n'implémente encore la sérialisation que sous forme de bouchons.
 
 **Source des noms de champs.** C++ n'a pas de réflexion exploitable. Trois options,
 par ordre de sûreté : une **macro de déclaration** (`REFLECT(State, counter, speed)`)
 qui génère la liste des champs — zéro dépendance, marche partout, c'est le choix
-retenu pour livrer ; un **générateur libclang** qui parse les headers, sans
+retenu pour livrer. Une bibliothèque C++17 peut fournir cette macro à la place :
+nlohmann/json (`NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT`, qui couvre déjà
+tout le tableau de remapping ci-dessus) ou Boost.Describe — **décision à prendre
+en équipe**, elle conditionne tout le chantier sérialisation ; un **générateur libclang** qui parse les headers, sans
 boilerplate côté utilisateur mais avec une étape de build et une dépendance LLVM ;
 la **réflexion statique C++26**, à vérifier sur la chaîne de compilation avant d'y
 compter et sur laquelle aucun lot ne doit reposer.
@@ -150,10 +149,12 @@ migration écrit à la main reste l'échappatoire pour les changements **sémant
 — un champ qui change d'unité, un champ scindé en deux — qu'aucune correspondance
 par nom ne peut deviner.
 
-**5. Gestionnaire de transition.** Un candidat détecté est promu directement : son
-`.so` remplace l'actif, `dlopen`/`dlsym` sont retentés sur la nouvelle version. Si
-l'un des deux échoue — symbole manquant, fichier corrompu — on reste sur l'ancienne
-version et on émet un `rolled_back`. C'est le seul filet qui reste : il attrape un
+**5. Gestionnaire de transition.** Un candidat détecté est ouvert à côté de la
+version active, l'état lui est transmis, puis il la remplace. Si une étape échoue
+— symbole manquant, ABI différente, snapshot rejeté — le candidat est jeté et la
+version active continue, état intact. Cette partie est faite
+(`src/host/DLLoader.cpp`, testée) ; reste à émettre les transitions dans le
+statut JSON, dont un `rolled_back`. C'est le seul filet qui reste : il attrape un
 candidat qui ne charge pas, pas un candidat qui charge puis plante à l'exécution.
 Machine à états et protocole de statut inter-processus spécifiés dans
 [protocole.md](protocole.md).
@@ -231,11 +232,10 @@ retrait) et dans *Historique*, [protocole.md](protocole.md).
 dans un process qui tourne sans imposer l'architecture plugin. Conséquence directe
 de la décision d'architecture en tête de document.
 
-**17. Compatibilité multi-OS.** Le projet cible Linux. Le chargeur repose sur
-`dlfcn.h` ; Windows demanderait une réécriture du chargeur (`LoadLibrary`,
-verrouillage des PDB) et non un portage. Le retrait du canari enlève la seule
-autre dépendance plateforme (`fork()`) : le blocage restant tient entièrement au
-chargeur, rien d'autre à traiter côté canari.
+**17. Support de Windows.** Linux et macOS sont supportés, et la CI build et teste
+les deux à chaque push — l'équipe développe sur les deux. Windows demanderait une
+réécriture du chargeur (`LoadLibrary`, verrouillage des PDB) et non un portage :
+hors périmètre.
 
 **18. Gestion du déploiement final.** L'outil sert la boucle de développement, pas
 la mise en production.

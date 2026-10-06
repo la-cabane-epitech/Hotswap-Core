@@ -21,6 +21,20 @@ file(MAKE_DIRECTORY "${HS_ARTIFACT_DIR}")
 set(HS_PLUGIN_ACTIVE    "${HS_ARTIFACT_DIR}/libplugin${CMAKE_SHARED_LIBRARY_SUFFIX}")
 set(HS_PLUGIN_CANDIDATE "${HS_PLUGIN_ACTIVE}.candidate")
 set(HS_PLUGIN_SRC       "${CMAKE_SOURCE_DIR}/src/plugin")
+set(HS_ABI_INCLUDE      "${CMAKE_SOURCE_DIR}/include")
+
+# The frozen contract between the Runtime and any plugin: include/hotswap/abi.hpp.
+add_library(hotswap_abi INTERFACE)
+target_include_directories(hotswap_abi INTERFACE "${HS_ABI_INCLUDE}")
+
+# The Runtime as a library, shared by the host executable and the tests.
+add_library(hotswap_runtime STATIC
+    src/host/DLLoader.cpp
+)
+target_include_directories(hotswap_runtime PUBLIC src/host)
+# CMAKE_DL_LIBS is empty on macOS (dlopen lives in libc) and "dl" on Linux:
+# a hardcoded "dl" does not link everywhere.
+target_link_libraries(hotswap_runtime PUBLIC hotswap_abi ${CMAKE_DL_LIBS})
 
 add_executable(FileWatcher
     src/filewatcher/main.cpp
@@ -33,19 +47,15 @@ target_include_directories(FileWatcher PRIVATE
 target_compile_definitions(FileWatcher PRIVATE
     HS_PLUGIN_SRC="${HS_PLUGIN_SRC}"
     HS_PLUGIN_CANDIDATE="${HS_PLUGIN_CANDIDATE}"
+    HS_ABI_INCLUDE="${HS_ABI_INCLUDE}"
     HS_COMPILER="${CMAKE_CXX_COMPILER}"
 )
 
 target_link_libraries(FileWatcher PRIVATE Threads::Threads)
 
+# The host never sees src/plugin: it only knows the ABI, through the runtime.
 add_executable(hotswap_host
     src/host/main.cpp
-    src/host/DLLoader.cpp
-)
-
-target_include_directories(hotswap_host PRIVATE
-    src/host
-    src/plugin
 )
 
 target_compile_definitions(hotswap_host PRIVATE
@@ -53,9 +63,7 @@ target_compile_definitions(hotswap_host PRIVATE
     HS_PLUGIN_CANDIDATE="${HS_PLUGIN_CANDIDATE}"
 )
 
-# CMAKE_DL_LIBS is empty on macOS (dlopen lives in libc) and "dl" on Linux:
-# a hardcoded "dl" does not link everywhere.
-target_link_libraries(hotswap_host PRIVATE ${CMAKE_DL_LIBS})
+target_link_libraries(hotswap_host PRIVATE hotswap_runtime)
 
 add_library(plugin SHARED
     src/plugin/plugin.cpp
@@ -64,6 +72,7 @@ add_library(plugin SHARED
 target_include_directories(plugin PRIVATE
     src/plugin
 )
+target_link_libraries(plugin PRIVATE hotswap_abi)
 
 set_target_properties(plugin PROPERTIES
     PREFIX "lib"
@@ -82,3 +91,9 @@ set_target_properties(plugin PROPERTIES
 set_target_properties(hotswap_host PROPERTIES
     OUTPUT_NAME "main"
 )
+
+option(HOTSWAP_BUILD_TESTS "Build the test suite" ON)
+if(HOTSWAP_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

@@ -1,10 +1,15 @@
 /*
-** Demo host application.
-**
-** It owns the session state (`app_state`) and never loses it across a valid
-** reload: code is reloaded underneath it, the data stays here. There is no
-** validation step before a candidate is promoted, though — a plugin that
-** crashes or hangs once called takes this process down for real.
+** EPITECH PROJECT, 2026
+** Hotswap-Core
+** File description:
+** Demo host application
+*/
+
+/*
+** The host keeps the session state alive across reloads without knowing its
+** type: the plugin creates it, the Runtime (DLLoader) holds an opaque pointer.
+** There is no validation step before a candidate is promoted, though — a
+** plugin that crashes or hangs once called takes this process down for real.
 */
 
 #include <chrono>
@@ -26,26 +31,23 @@ constexpr auto IDLE_DELAY = std::chrono::milliseconds(200);
 
 int main()
 {
-    State app_state = {0};
-
     std::cout << "Starting host application." << std::endl;
     std::cout << "  active    : " << HS_PLUGIN_ACTIVE << std::endl;
     std::cout << "  candidate : " << HS_PLUGIN_CANDIDATE << "\n" << std::endl;
 
-    DLLoader plugin_loader(HS_PLUGIN_ACTIVE, HS_PLUGIN_CANDIDATE);
+    DLLoader runtime(HS_PLUGIN_ACTIVE, HS_PLUGIN_CANDIDATE);
     bool waiting_reported = false;
 
     while (true) {
-        plugin_loader.poll();
+        runtime.poll();
 
-        if (plugin_loader.is_loaded()) {
+        if (runtime.is_loaded()) {
             waiting_reported = false;
-            plugin_loader.get_function()(&app_state);
+            runtime.update();
             continue;
         }
 
-        /* No plugin: wait without burning a core, and say so only once — the
-        ** previous version flooded the output. */
+        /* No plugin: wait without burning a core, and say so only once. */
         if (!waiting_reported) {
             std::cout << "[Host] No plugin loaded. Waiting..." << std::endl;
             waiting_reported = true;

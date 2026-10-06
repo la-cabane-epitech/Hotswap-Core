@@ -11,7 +11,7 @@ Le pipeline (**Watcher/Build → Runtime**, plus **Reporting** en observateur)
 tourne dans des processus qui ne partagent pas de mémoire et ne communiquent
 pas par IPC directe. Ils communiquent par un fichier de statut par module —
 même logique que le polling déjà utilisé par `DLLoader::poll` pour détecter un
-`.so` modifié.
+candidat.
 
 **Il n'y a pas d'étape de validation avant adoption.** Un candidat qui
 compile et dont `dlopen`/`dlsym` réussissent est promu directement. Un plugin
@@ -24,25 +24,30 @@ C'est un compromis assumé, pas un oubli : voir *Historique* en bas de page.
 ```
 building → build_ok → swapped
               │
-        promote_failed      (dlopen/dlsym échoue sur un fichier qui vient de compiler)
+        promote_failed      (dlopen/dlsym, ABI ou relecture de l'état échoue)
               │
          rolled_back
 ```
 
 Un `build_failed` ne produit jamais de candidat, donc rien à promouvoir. Un
-`promote_failed` ne peut venir que d'un symbole manquant ou renommé entre deux
-versions — le seul filet qui reste est celui déjà intégré à
-`DLLoader::promote()`, pas une étape à part.
+`promote_failed` vient d'un symbole manquant ou renommé, d'une version d'ABI
+différente, ou d'un snapshot que `plugin_state_load` refuse. Le candidat est
+alors jeté et la version active continue, état intact : c'est le filet déjà
+intégré à `DLLoader::promote()`, pas une étape à part.
 
 ### Fichiers
 
 ```
 .hotswap/
-├── plugin.so             # version active, chargée par le Runtime
-├── plugin.so.candidate   # nouvelle version en attente de promotion
-├── plugin.status.json    # source de vérité du pipeline pour ce module
-└── plugin.log            # stderr de compilation
+├── libplugin.so              # dernière version promue, chargée au démarrage du Runtime
+├── libplugin.so.candidate    # nouvelle version en attente de promotion
+├── libplugin.so.gen<N>       # copie chargée par le Runtime pour le swap N
+├── plugin.status.json        # source de vérité du pipeline pour ce module (à faire)
+└── build.log                 # stderr de compilation
 ```
+
+Le suffixe est `.so` sur Linux et `.dylib` sur macOS. Le détail des fichiers
+`gen<N>` est dans [abi.md](abi.md), *Séquence d'un swap*.
 
 `plugin.status.json` s'écrit comme le `.so` : sur un `.tmp`, puis `rename()` —
 jamais en place, pour qu'aucun lecteur ne tombe sur un JSON à moitié écrit.
@@ -56,10 +61,10 @@ jamais en place, pour qu'aucun lecteur ne tombe sur un JSON à moitié écrit.
   "state": "swapped",
   "producer": "runtime",
   "timestamp": "2026-08-25T14:32:10Z",
-  "candidate_path": ".hotswap/plugin.so.candidate",
-  "active_path": ".hotswap/plugin.so",
-  "detail": { "previous_active_path": ".hotswap/plugin.so.previous" },
-  "log_path": ".hotswap/plugin.log"
+  "candidate_path": ".hotswap/libplugin.so.candidate",
+  "active_path": ".hotswap/libplugin.so",
+  "detail": { "state_version_from": "1", "state_version_to": "2" },
+  "log_path": ".hotswap/build.log"
 }
 ```
 
@@ -79,7 +84,7 @@ jamais en place, pour qu'aucun lecteur ne tombe sur un JSON à moitié écrit.
 | État | Champs de `detail` |
 |---|---|
 | `build_failed` | `compiler_exit_code`, `stderr_excerpt` |
-| `swapped` | `previous_active_path`, `state_version_from`, `state_version_to` |
+| `swapped` | `state_version_from`, `state_version_to` |
 | `rolled_back` | `cause_state` — l'état qui a déclenché le rollback |
 
 ### Qui écrit, qui lit
@@ -95,8 +100,8 @@ Deux programmes, trois étapes de la machine — pas de troisième processus.
 ### Règles
 
 1. **Écriture atomique toujours** — `.tmp` + `rename()`, jamais de write direct sur `*.status.json`.
-2. **Détection par polling du mtime** — réutilise le pattern déjà présent dans `DLLoader::poll`.
-3. **Un seul statut à la fois** — le fichier contient le dernier état connu, pas un historique (l'historique complet vit dans `plugin.log`).
+2. **Détection par polling** du mtime du fichier de statut, comme `DLLoader::poll` le fait déjà pour le candidat.
+3. **Un seul statut à la fois** — le fichier contient le dernier état connu, pas un historique (l'historique complet vit dans `build.log`).
 
 ### Historique
 

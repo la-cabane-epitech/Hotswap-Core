@@ -17,11 +17,13 @@ et charge est promu directement. Un plugin qui plante ou boucle une fois
 réellement appelé fait tomber l'application pour de vrai — ce choix concentre
 l'effort sur la promesse centrale plutôt que sur un filet de sécurité autour.
 
-Le dépôt contient trois composants :
+Le dépôt contient trois composants, reliés par un contrat figé :
 
+- `include/hotswap/abi.hpp` — le contrat binaire entre le Runtime et tout plugin, voir [docs/abi.md](docs/abi.md)
 - `src/filewatcher/` — surveille les sources du plugin et les recompile en candidat
-- `src/host/` — le Runtime : adopte le candidat dès qu'il est détecté
+- `src/host/` — le Runtime : détient l'état sans en connaître le type, adopte le candidat dès qu'il est détecté
 - `src/plugin/` — plugin de démonstration, rechargé à chaud
+- `tests/` — tests du Runtime contre de vraies bibliothèques partagées
 
 L'outil s'adresse aux projets qui ont déjà une frontière de rechargement, ou
 peuvent en isoler une rapidement, et dont l'état de session est cher à
@@ -57,6 +59,7 @@ Le build est géré par CMake et se lance depuis la racine du dépôt :
 
 ```bash
 ./build.sh
+ctest --test-dir build --output-on-failure   # tests, aussi lancés par la CI
 ```
 
 Les binaires sont placés à la racine. Le Runtime et le Watcher sont deux processus
@@ -79,9 +82,9 @@ Modifier `src/plugin/plugin.cpp` déclenche alors le cycle complet :
 
 ```
 [Build]   plugin.cpp changed, building candidate...
-[Build]   Candidate published, waiting for Runtime validation.
+[Build]   Candidate published.
 [Runtime] Candidate detected, promoting.
-[Runtime] Swap done, session state preserved.
+[Runtime] Swap done, session state kept as is.
 [Plugin]  counter = 8           ← reprend où il en était, il n'est pas reparti de zéro
 ```
 
@@ -103,9 +106,9 @@ regroupés dans `.hotswap/`, à la racine du dépôt :
 
 ```
 .hotswap/
-├── libplugin.dylib            # version active, chargée par le Runtime
+├── libplugin.dylib            # dernière version promue, chargée au démarrage du Runtime
 ├── libplugin.dylib.candidate  # candidat en attente de promotion
-├── libplugin.dylib.previous   # version précédente, pour le rollback
+├── libplugin.dylib.gen<N>     # copie chargée par le Runtime pour le swap N
 └── build.log                  # stderr du compilateur
 ```
 
@@ -114,18 +117,20 @@ plateforme (`.so` sur Linux, `.dylib` sur macOS).
 
 ### État d'implémentation
 
-Le hot reload fonctionne, sans filet de sécurité : le pipeline **Build → Swap /
-Rollback** tourne déjà ([DLLoader.cpp](src/host/DLLoader.cpp)). Un canari
-existait ici et a été retiré pour concentrer l'effort sur la promesse centrale
-— voir *Historique* dans [protocole.md](docs/protocole.md).
+Le hot reload fonctionne, sans filet de sécurité autour de l'exécution. Le
+contrat de [abi.md](docs/abi.md) est figé et le Runtime le respecte entièrement
+([DLLoader.cpp](src/host/DLLoader.cpp)) : l'hôte ne connaît plus le type de
+l'état, un changement de layout passe par un snapshot, et un candidat qui ne se
+charge pas ou refuse le snapshot est jeté sans toucher à la version active. Un
+canari existait et a été retiré pour concentrer l'effort sur la promesse
+centrale — voir *Historique* dans [protocole.md](docs/protocole.md).
 
-**Le cœur du projet reste à construire.** La sérialisation de l'état avec
-remapping par nom de champ ([etat.md](docs/etat.md)) n'est pas codée : l'état
-survit aujourd'hui au rechargement tant que le layout de la struct ne change pas
-— ce qui est exactement le cas que la conservation d'état doit couvrir. Le
+**Le cœur du projet reste à finir.** La sérialisation avec remapping par nom de
+champ ([etat.md](docs/etat.md)) n'est pas codée : le plugin de démo n'a que des
+bouchons, donc un changement de layout remet l'état à ses valeurs par défaut. Le
 protocole de statut par fichier JSON ([protocole.md](docs/protocole.md)) n'est
-pas non plus codé : les deux processus se coordonnent pour l'instant par la seule
-présence du fichier candidat.
+pas codé non plus. La répartition de ce travail est dans
+[chantiers.md](docs/chantiers.md).
 
 ## Documentation
 
@@ -136,6 +141,7 @@ présence du fichier candidat.
 | [docs/protocole.md](docs/protocole.md) | Pipeline Build → Swap, machine à états, format de statut |
 | [docs/etat.md](docs/etat.md) | Persistance de l'état, sérialisation, remapping de structure |
 | [docs/MoSCoW.md](docs/MoSCoW.md) | Périmètre fonctionnel : Must / Should / Could / Won't |
+| [docs/chantiers.md](docs/chantiers.md) | Répartition du travail en parallèle, règles communes |
 
 La référence de l'API est générée par Doxygen à chaque push sur `main` et publiée
 sur GitHub Pages.

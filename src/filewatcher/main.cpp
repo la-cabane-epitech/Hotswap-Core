@@ -18,6 +18,9 @@
 #ifndef HS_PLUGIN_CANDIDATE
 #define HS_PLUGIN_CANDIDATE "./libplugin.so.candidate"
 #endif
+#ifndef HS_ABI_INCLUDE
+#define HS_ABI_INCLUDE "./include"
+#endif
 #ifndef HS_COMPILER
 #define HS_COMPILER "c++"
 #endif
@@ -40,7 +43,8 @@ int main(int ac, char **av)
     std::cout << "  candidate : " << HS_PLUGIN_CANDIDATE << std::endl;
     std::cout << "  compiler  : " << HS_COMPILER << "\n" << std::endl;
 
-    Core core(source_dir, HS_PLUGIN_CANDIDATE, HS_COMPILER, HS_PLUGIN_SRC);
+    /* The plugin sees its own headers and the ABI contract, nothing else. */
+    Core core(source_dir, HS_PLUGIN_CANDIDATE, HS_COMPILER, {source_dir, HS_ABI_INCLUDE});
     FileWatcher watcher(source_dir, POLL_DELAY);
 
     watcher.start([&core](const std::string &path, FileStatus status) {
