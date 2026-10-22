@@ -38,6 +38,8 @@ target_link_libraries(hotswap_runtime PUBLIC hotswap_abi ${CMAKE_DL_LIBS})
 
 add_executable(FileWatcher
     src/filewatcher/main.cpp
+    src/filewatcher/Core.cpp
+    src/filewatcher/FileWatcher.cpp
 )
 
 target_include_directories(FileWatcher PRIVATE
